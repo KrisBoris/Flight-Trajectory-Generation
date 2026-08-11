@@ -1,7 +1,8 @@
 # coordinates_grid.py
 
-from weights_grid import WeightsGrid
+from coordinates_grid.weights_grid import WeightsGrid
 from dataclasses import dataclass, field
+from typing import ClassVar
 import numpy as np
 
 
@@ -9,10 +10,12 @@ import numpy as np
 class CoordinatesGrid():
     """
     Data class przechowująca graf ze współrzędnymi możliwych do odwiedzenia punktów
-    oraz wartości dla każdego punktu odpowiadające prawdopodobieństwu znalezienia tam 
-    poszukiwanej osoby 
+    oraz wartości dla każdego punktu odpowiadające prawdopodobieństwu znalezienia tam
+    poszukiwanej osoby
     """
-        
+
+    MAX_PROBABILITY: ClassVar[float] = 1.0
+
     coordinates_values: np.ndarray = field()
     weights_grid: WeightsGrid = field()
 
@@ -46,7 +49,19 @@ class CoordinatesGrid():
         
         self.coordinates_values = np.ones([x, y], dtype=np.float64)
         return True
-    
+
+
+    def init_grids(self, x: int, y: int) -> bool:
+        """ Initializes coordinates_values and the nested weights_grid together """
+        
+        if not self.init_empty_grid(x, y):
+            return False
+
+        if not self.weights_grid.init_empty_grid(x, y):
+            return False
+
+        return True
+
 
     def set_searched_areas(self, areas_coords: np.ndarray) -> bool:
 
@@ -59,6 +74,10 @@ class CoordinatesGrid():
             return False
         
         for coords in areas_coords:
+
+            # coords[0] -> x-position
+            # coords[1] -> y-position
+            # coords[2] -> probability
             
             if (coords[0] < 0 or coords[0] > self.coordinates_values.shape[0] - 1 
                 or coords[1] < 0 or coords[1] > self.coordinates_values.shape[1] - 1
@@ -67,16 +86,20 @@ class CoordinatesGrid():
             
             if (coords[0] > 1 and coords[0] < self.coordinates_values.shape[0] - 2
                 and coords[1] > 1 and coords[1] < self.coordinates_values.shape[1] - 2):
-                
-                for i in range(coords[0] - 2, coords[0] + 2):
-                    for j in range(coords[1] - 2, coords[1] + 2):
-                        self.coordinates_values[i, j] = coords[2] * 0.3
-                
-                for i in range(coords[0] - 1, coords[0] + 1):
-                    for j in range(coords[1] - 1, coords[1] + 1):
-                        self.coordinates_values[i, j] = coords[2] * 0.7
 
-                self.coordinates_values[coords[0], coords[1]] = coords[2]
+                x = int(coords[0])
+                y = int(coords[1])
+                probability = coords[2]
+
+                for i in range(x - 2, x + 2):
+                    for j in range(y - 2, y + 2):
+                        self.coordinates_values[i, j] = probability * 0.3
+
+                for i in range(x - 1, x + 1):
+                    for j in range(y - 1, y + 1):
+                        self.coordinates_values[i, j] = probability * 0.7
+
+                self.coordinates_values[x, y] = probability
             
             else:
                 return False
