@@ -1,18 +1,9 @@
 # trajectory_generator.py
 
 from coordinates_grid.coordinates_grid import CoordinatesGrid
-from coordinates_grid.weights_grid import DIRECTIONS
+from constants import Constants
 from dataclasses import dataclass
 import numpy as np
-
-
-# Climbing (up / up-right / up-left) costs the drone more battery than the
-# weights_grid base cost; descending (down / down-right / down-left) costs
-# less. This is a flat, direction-only approximation - if weights_grid was
-# populated via test_data_generator.init_weights_from_elevation, the climb/descend asymmetry
-# is already baked into the base cost from real terrain, and stacking this
-# multiplier on top would double-penalize/reward it.
-DIRECTION_COST_MULTIPLIERS = (1.1, 1.1, 1.0, 0.9, 0.9, 0.9, 1.0, 1.1)
 
 
 @dataclass
@@ -55,7 +46,7 @@ class TrajectoryGenerator():
             best_value = None
             best_move = None  # (next_row, next_col, cost, reverse_cost)
 
-            for direction, (delta_row, delta_col) in enumerate(DIRECTIONS):
+            for direction, (delta_row, delta_col) in enumerate(Constants.DIRECTIONS):
                 next_row = row + delta_row
                 next_col = col + delta_col
 
@@ -69,7 +60,7 @@ class TrajectoryGenerator():
                 if blocked_mask is not None and blocked_mask[next_row, next_col]:
                     continue
 
-                cost = weights[row, col, direction] * DIRECTION_COST_MULTIPLIERS[direction]
+                cost = weights[row, col, direction] * Constants.DIRECTION_COST_MULTIPLIERS[direction]
 
                 reverse_cost = 0.0
                 if require_return_to_base:
@@ -79,7 +70,7 @@ class TrajectoryGenerator():
                     # this same edge - from the candidate cell to the one
                     # we're standing on now - would cost.
                     reverse_direction = (direction + 4) % 8
-                    reverse_cost = weights[next_row, next_col, reverse_direction] * DIRECTION_COST_MULTIPLIERS[reverse_direction]
+                    reverse_cost = weights[next_row, next_col, reverse_direction] * Constants.DIRECTION_COST_MULTIPLIERS[reverse_direction]
 
                 # The budget must cover this move AND retracing every edge
                 # flown so far - including this new one - back to base.

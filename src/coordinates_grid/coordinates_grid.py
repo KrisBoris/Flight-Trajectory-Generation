@@ -1,8 +1,8 @@
 # coordinates_grid.py
 
 from coordinates_grid.weights_grid import WeightsGrid
+from constants import Constants
 from dataclasses import dataclass, field
-from typing import ClassVar
 import numpy as np
 
 
@@ -13,8 +13,6 @@ class CoordinatesGrid():
     oraz wartości dla każdego punktu odpowiadające prawdopodobieństwu znalezienia tam
     poszukiwanej osoby
     """
-
-    MAX_PROBABILITY: ClassVar[float] = 1.0
 
     coordinates_values: np.ndarray = field()
     weights_grid: WeightsGrid = field()
@@ -63,43 +61,30 @@ class CoordinatesGrid():
         return True
 
 
-    def set_searched_areas(self, areas_coords: np.ndarray) -> bool:
+    def set_searched_areas(self, areas_coords: list) -> bool:
 
-        if areas_coords.ndim != 2 or areas_coords.shape[1] != 3:
-            print(f"Areas coordinates expected size is Nx3, not {areas_coords.shape}")
-            return False
-        
-        if not np.issubdtype(areas_coords.dtype, np.floating):
-            print(f"Coordinates values must be os float type, not {areas_coords.dtype}")
-            return False
-        
         for coords in areas_coords:
+
+            if not isinstance(coords, np.ndarray) or coords.ndim != 1 or coords.shape[0] != 3:
+                print(f"Each area must be an ndarray of shape (3,) - (x, y, probability), not {coords}")
+                return False
+
+            if not np.issubdtype(coords.dtype, np.floating):
+                print(f"Coordinates values must be of float type, not {coords.dtype}")
+                return False
 
             # coords[0] -> x-position
             # coords[1] -> y-position
             # coords[2] -> probability
-            
-            if (coords[0] < 0 or coords[0] > self.coordinates_values.shape[0] - 1 
+
+            if (coords[0] < 0 or coords[0] > self.coordinates_values.shape[0] - 1
                 or coords[1] < 0 or coords[1] > self.coordinates_values.shape[1] - 1
                 or coords[2] < 0.0):
                 continue
-            
-            if (coords[0] > 1 and coords[0] < self.coordinates_values.shape[0] - 2
-                and coords[1] > 1 and coords[1] < self.coordinates_values.shape[1] - 2):
 
-                x = int(coords[0])
-                y = int(coords[1])
-                probability = coords[2]
+            probability = min(coords[2], Constants.MAX_PROBABILITY)
+            x = int(coords[0])
+            y = int(coords[1])
+            self.coordinates_values[x, y] = probability
 
-                for i in range(x - 2, x + 2):
-                    for j in range(y - 2, y + 2):
-                        self.coordinates_values[i, j] = probability * 0.3
-
-                for i in range(x - 1, x + 1):
-                    for j in range(y - 1, y + 1):
-                        self.coordinates_values[i, j] = probability * 0.7
-
-                self.coordinates_values[x, y] = probability
-            
-            else:
-                return False
+        return True

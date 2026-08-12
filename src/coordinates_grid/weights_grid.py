@@ -1,21 +1,8 @@
 # weights_grid.py
 
+from constants import Constants
 from dataclasses import dataclass, field
 import numpy as np
-
-
-# Offsets (delta_row, delta_col) for the 8 directions stored in the last
-# dimension of `weights`: index 0 is "up", the rest follow clockwise.
-DIRECTIONS = (
-    (-1, 0),   # 0: up
-    (-1, 1),   # 1: up-right
-    (0, 1),    # 2: right
-    (1, 1),    # 3: down-right
-    (1, 0),    # 4: down
-    (1, -1),   # 5: down-left
-    (0, -1),   # 6: left
-    (-1, -1),  # 7: up-left
-)
 
 
 @dataclass
@@ -50,46 +37,59 @@ class WeightsGrid():
 
     def init_from_elevation(
         self,
-        elevation: np.ndarray,
+        coordinates: np.ndarray,
         climb_cost_per_meter: float,
         descent_cost_per_meter: float,
         base_cost: float = 1.0,
     ) -> bool:
         """
-        Populates weights from a real (or synthetic, see
-        test_data_generator.generate_random_elevation_grid) elevation grid
-        instead of a flat guess.
+        Populates weights from each cell's real-world local coordinates
+        (a rows x cols x 3 array of (x, y, z) in meters - see
+        test_data_generator.generate_random_terrain_coordinates - where the
+        grid's bottom-left cell sits at x = y = 0 and z is altitude above sea
+        level) instead of a flat direction guess.
 
-        For every cell and direction, cost is base_cost adjusted by the actual
-        altitude change to that neighbor: climbing adds climb_cost_per_meter
-        per meter gained, descending subtracts descent_cost_per_meter per
-        meter lost (floored at 0.9 * base_cost so a steep descent is
-        discounted but never absurdly cheap). This is a more physically
-        grounded stand-in for a flat direction bias (e.g. "north always costs
-        more") since it reacts to the terrain that is actually there, not
-        just which compass direction the drone flies.
+        For every cell and direction, cost has two parts:
+          - a travel cost of base_cost per meter of actual horizontal
+            distance to that neighbor, so a diagonal move - which covers more
+            real ground than a cardinal one - costs proportionally more;
+          - a grade penalty of elevation_change^2 / horizontal_distance
+            (i.e. slope^2 * horizontal_distance, slope = elevation_change /
+            horizontal_distance). This grows quickly for a steep, short hop
+            and shrinks for the same altitude change spread over a longer,
+            gentler run, rewarding gradual climbs/descents over abrupt ones.
+        Climbing adds climb_cost_per_meter * grade_penalty; descending
+        subtracts descent_cost_per_meter * grade_penalty (floored at
+        0.1 * travel_cost so a long, gentle descent is discounted but never
+        made absurdly - or negatively - cheap).
         """
-        if elevation.ndim != 2:
-            print(f"Elevation matrix must be two-dimensional, not {elevation.ndim}")
+        if coordinates.ndim != 3 or coordinates.shape[2] != 3:
+            print(f"Coordinates matrix must be a (rows, cols, 3) array of (x, y, z), not {coordinates.shape}")
             return False
 
-        rows, cols = elevation.shape
+        rows, cols, _ = coordinates.shape
         self.weights = np.full((rows, cols, 8), base_cost, dtype=np.float64)
 
         for row in range(rows):
             for col in range(cols):
-                for direction, (delta_row, delta_col) in enumerate(DIRECTIONS):
+                for direction, (delta_row, delta_col) in enumerate(Constants.DIRECTIONS):
                     next_row = row + delta_row
                     next_col = col + delta_col
 
                     if next_row < 0 or next_row >= rows or next_col < 0 or next_col >= cols:
                         continue  # off-grid; left at base_cost since a path search will never take this edge
 
-                    elevation_change = elevation[next_row, next_col] - elevation[row, col]
+                    x0, y0, z0 = coordinates[row, col]
+                    x1, y1, z1 = coordinates[next_row, next_col]
+
+                    horizontal_distance = float(np.hypot(x1 - x0, y1 - y0))
+                    elevation_change = z1 - z0
+                    travel_cost = base_cost * horizontal_distance
+                    grade_penalty = (elevation_change ** 2) / horizontal_distance if horizontal_distance > 0 else 0.0
 
                     if elevation_change > 0:
-                        self.weights[row, col, direction] = base_cost + elevation_change * climb_cost_per_meter
+                        self.weights[row, col, direction] = travel_cost + climb_cost_per_meter * grade_penalty
                     else:
-                        self.weights[row, col, direction] = max(base_cost * 0.9, base_cost + elevation_change * descent_cost_per_meter)
+                        self.weights[row, col, direction] = max(0.8 * travel_cost, travel_cost - descent_cost_per_meter * grade_penalty)
 
         return True
