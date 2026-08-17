@@ -17,6 +17,37 @@ PROBABILITY_COLORMAP = "RdYlGn_r"
 
 BLOCKED_LABEL = "blocked (no-fly)"
 
+# Target cells-across for the 3D surface mesh - see _build_3d_view.
+SURFACE_MESH_TARGET = 50
+
+
+def _max_pool_2d(array: np.ndarray, block_size: int) -> np.ndarray:
+    """
+    Downsamples array by taking the max within each block_size x block_size
+    block (a trailing partial block, if rows/cols isn't a multiple of
+    block_size, still gets its own max over whatever it has).
+
+    Used instead of plain strided sampling (array[::block_size, ::block_size])
+    when downsampling probability data for the 3D mesh: probability is sparse
+    and spiky - a single high-probability search cell surrounded by
+    background - so naive striding can land exactly between hotspots and
+    silently drop them, and averaging would dilute one into the background.
+    Max-pooling guarantees every hotspot survives downsampling somewhere in
+    the reduced grid.
+    """
+    rows, cols = array.shape
+    pooled_rows = -(-rows // block_size)
+    pooled_cols = -(-cols // block_size)
+
+    pooled = np.empty((pooled_rows, pooled_cols), dtype=array.dtype)
+
+    for i in range(pooled_rows):
+        for j in range(pooled_cols):
+            block = array[i * block_size:(i + 1) * block_size, j * block_size:(j + 1) * block_size]
+            pooled[i, j] = block.max()
+
+    return pooled
+
 
 class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
     """
@@ -47,15 +78,21 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         tabs.addTab(self._build_2d_view(values, norm, path, blocked_mask), "2D grid")
 
         if terrain_coordinates is not None:
+            # terrain_coordinates is rendered as-is - it's already the exact
+            # altitudes the cost model used (see
+            # coordinates_grid.test_data_generator.generate_random_terrain_coordinates
+            # and its max_gradient parameter), so what's displayed always
+            # matches what the drone's cost was computed against.
             tabs.addTab(self._build_3d_view(values, norm, path, terrain_coordinates, blocked_mask), "3D terrain")
 
         self.setCentralWidget(tabs)
-        self.resize(900, 700)
+        self.resize(1400, 1000)
 
 
     def _build_2d_view(self, values: np.ndarray, norm: mcolors.Normalize, path: list, blocked_mask: np.ndarray) -> FigureCanvasQTAgg:
-        figure = Figure(figsize=(6, 6))
+        figure = Figure(figsize=(10, 9))
         canvas = FigureCanvasQTAgg(figure)
+        canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         axes = figure.add_subplot(111)
 
         image = axes.imshow(values, cmap=PROBABILITY_COLORMAP, norm=norm, origin="upper")
@@ -109,21 +146,45 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         terrain_coordinates: np.ndarray,
         blocked_mask: np.ndarray,
     ) -> FigureCanvasQTAgg:
-        figure = Figure(figsize=(6, 6))
+        figure = Figure(figsize=(10, 9))
         canvas = FigureCanvasQTAgg(figure)
+        canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         axes = figure.add_subplot(111, projection="3d")
+        figure.subplots_adjust(left=0.02, right=0.95, top=0.95, bottom=0.05)
 
-        x = terrain_coordinates[:, :, 0]
-        y = terrain_coordinates[:, :, 1]
-        z = terrain_coordinates[:, :, 2]
+        # plot_surface draws one edge-outlined quad per 4 neighboring cells.
+        # At full resolution a big grid (e.g. 100x100 = 10000 quads) packs so
+        # many thin edge lines into the same screen space that they create
+        # their own visual noise - a "fishnet" moire - making even genuinely
+        # smooth terrain look spiky. Subsampling to roughly SURFACE_MESH_TARGET
+        # cells across keeps the mesh legible regardless of grid size; a
+        # SURFACE_MESH_TARGET of 50 leaves grids up to 50x50 (the size the
+        # surface styling was tuned against) completely unaffected.
+        rows, cols = terrain_coordinates.shape[:2]
+        stride = max(1, round(max(rows, cols) / SURFACE_MESH_TARGET))
+
+        # The mesh geometry (x, y, z) is smooth after max_gradient-limiting,
+        # so simple strided sampling loses no meaningful shape detail. The
+        # probability values are the opposite - sparse, isolated spikes - so
+        # they're downsampled with _max_pool_2d instead, and each face takes
+        # the max (not the average) of its 4 corners: averaging would dilute
+        # an isolated hotspot toward the background, and either approach
+        # could otherwise make a "close to maximum" cell render yellow-ish or
+        # not show up at all if a plain stride happened to skip it.
+        x = terrain_coordinates[::stride, ::stride, 0]
+        y = terrain_coordinates[::stride, ::stride, 1]
+        z = terrain_coordinates[::stride, ::stride, 2]
+        pooled_values = _max_pool_2d(values, stride)
 
         # plot_surface connects every 4 neighboring cells into one quad face,
-        # so it needs one color per face rather than per cell - each face's
-        # color is the average probability of its 4 corner cells. shade=False
+        # so it needs one color per face rather than per cell. shade=False
         # keeps that color exact instead of matplotlib's default lighting
         # tint, which would distort the probability spectrum.
         colormap = matplotlib.colormaps[PROBABILITY_COLORMAP]
-        face_values = (values[:-1, :-1] + values[1:, :-1] + values[:-1, 1:] + values[1:, 1:]) / 4.0
+        face_values = np.maximum(
+            np.maximum(pooled_values[:-1, :-1], pooled_values[1:, :-1]),
+            np.maximum(pooled_values[:-1, 1:], pooled_values[1:, 1:]),
+        )
         face_colors = colormap(norm(face_values))
 
         axes.plot_surface(x, y, z, facecolors=face_colors, rstride=1, cstride=1, linewidth=0.2, edgecolor="dimgray", shade=False, zorder=1)
@@ -191,6 +252,11 @@ def launch_gui(
     Opens the trajectory visualizer window and blocks until it's closed.
     """
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    window = TrajectoryVisualizerWindow(coordinates_grid, path=path, terrain_coordinates=terrain_coordinates, blocked_mask=blocked_mask)
-    window.show()
+    window = TrajectoryVisualizerWindow(
+        coordinates_grid,
+        path=path,
+        terrain_coordinates=terrain_coordinates,
+        blocked_mask=blocked_mask,
+    )
+    window.showMaximized()
     app.exec_()

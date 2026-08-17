@@ -81,7 +81,7 @@ class CoordinatesGrid():
                 or coords[1] < 0 or coords[1] > self.coordinates_values.shape[1] - 1
                 or coords[2] < 0.0):
                 continue
-
+            
             probability = min(coords[2], Constants.MAX_PROBABILITY)
             x = int(coords[0])
             y = int(coords[1])

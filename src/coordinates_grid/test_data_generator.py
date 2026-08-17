@@ -26,21 +26,63 @@ def generate_random_positions(coordinates_grid: CoordinatesGrid, amount: int) ->
     return [np.array([row, col, probability], dtype=np.float64) for row, col, probability in zip(rows, cols, probabilities)]
 
 
-def _smooth_elevation(elevation: np.ndarray, iterations: int, smoothing_factor: float = 0.2) -> np.ndarray:
+def _limit_elevation_gradient(
+    elevation: np.ndarray,
+    cell_size_meters: float,
+    max_gradient: float,
+    max_iterations: int = 2000,
+) -> np.ndarray:
     """
-    Repeatedly nudges each cell toward the average of its 4-connected
-    neighbors - a discrete diffusion step, the same idea behind a heat
-    equation or a repeated box blur. This turns cell-independent white noise
-    into a field where neighboring cells are close in value, i.e. gradual
-    slopes instead of random jumps. Edge cells reuse their nearest interior
-    neighbor (via 'edge' padding) so borders don't erode toward zero.
-    """
-    smoothed = elevation.astype(np.float64)
+    Redistributes elevation between every pair of 4-connected neighbors so
+    that no two adjacent cells end up differing in altitude by more than
+    max_gradient * cell_size_meters.
 
-    for _ in range(iterations):
-        padded = np.pad(smoothed, pad_width=1, mode="edge")
-        neighbor_average = (padded[:-2, 1:-1] + padded[2:, 1:-1] + padded[1:-1, :-2] + padded[1:-1, 2:]) / 4.0
-        smoothed = smoothed + smoothing_factor * (neighbor_average - smoothed)
+    max_gradient is a slope ratio - rise over run, the same way you'd read a
+    grade percentage (just not multiplied by 100). Concretely:
+      - max_gradient = 1.0   -> neighbors can differ by up to a full
+        cell_size_meters (a 45 degree edge - steep, cliff-like).
+      - max_gradient = 0.3   -> roughly a 17 degree slope; rugged but
+        walkable/flyable mountain terrain.
+      - max_gradient = 0.05  -> roughly 3 degrees; gentle rolling hills.
+    Since the cap is defined per meter of horizontal distance rather than
+    per cell, the same max_gradient value means the same real-world
+    steepness regardless of cell_size_meters or grid resolution.
+
+    This is a thermal-erosion-style relaxation: whenever an edge exceeds the
+    cap, half the excess difference slides from the higher cell to the lower
+    one - like sediment sliding downhill until every slope settles at or
+    below the repose angle. Repeated until every edge satisfies the cap, or
+    max_iterations is reached as a safety bound (in practice this converges
+    in well under a few hundred passes regardless of grid size, since the
+    check below stops as soon as nothing changes).
+    """
+    smoothed = elevation.astype(np.float64).copy()
+    max_difference = max_gradient * cell_size_meters
+    tolerance = max(max_difference * 1e-6, 1e-9)
+
+    for _ in range(max_iterations):
+        changed = False
+
+        for delta_row, delta_col in ((0, 1), (1, 0)):
+            if delta_row == 0:
+                a, b = smoothed[:, :-1], smoothed[:, 1:]
+            else:
+                a, b = smoothed[:-1, :], smoothed[1:, :]
+
+            difference = a - b
+            excess = np.abs(difference) - max_difference
+            exceeding = excess > tolerance
+
+            if not np.any(exceeding):
+                continue
+
+            changed = True
+            transfer = np.where(exceeding, np.sign(difference) * excess / 2.0, 0.0)
+            a -= transfer
+            b += transfer
+
+        if not changed:
+            break
 
     return smoothed
 
@@ -50,7 +92,7 @@ def generate_random_terrain_coordinates(
     cols: int,
     altitude_range: tuple[float, float],
     cell_size_meters: float = 1.0,
-    smoothing_iterations: int = 25,
+    max_gradient: float = 0.3,
 ) -> np.ndarray:
     """
     Generates a rows x cols x 3 array of local (x, y, z) coordinates in
@@ -61,11 +103,26 @@ def generate_random_terrain_coordinates(
 
     z (altitude above sea level) starts as independent uniform noise, which
     on its own looks nothing like a mountain (every cell is unrelated to its
-    neighbor, so the "terrain" is just static). It's then smoothed by
-    _smooth_elevation for smoothing_iterations passes - more passes means
-    gentler, more gradual slopes - and rescaled back to exactly span
-    altitude_range = (min_altitude, max_altitude), since smoothing pulls
-    extreme values toward the mean and would otherwise shrink the range.
+    neighbor). _limit_elevation_gradient then redistributes it so no two
+    neighboring cells differ by more than max_gradient * cell_size_meters -
+    see that function's docstring for what max_gradient means and how to
+    tune it - and the result is shifted (not rescaled) so its lowest point
+    sits at min_altitude.
+
+    It's a shift rather than a rescale deliberately: the redistribution
+    pulls extreme values toward the mean and shrinks the elevation range, but
+    stretching it back out to exactly fill altitude_range would multiply
+    every gradient by the same stretch factor - directly undoing the
+    max_gradient cap this function just enforced. A tight max_gradient on a
+    small grid may therefore land well short of max_altitude, since only so
+    much total relief fits within the cap over a limited number of cells;
+    that's expected, not a bug.
+
+    The returned coordinates are the actual altitudes used everywhere
+    downstream - the cost model (WeightsGrid.init_from_elevation) and the 3D
+    visualization (gui.visualizer) both see exactly this data, unmodified,
+    so what you look at always matches what the drone's cost was computed
+    against.
     """
     min_altitude, max_altitude = altitude_range
 
@@ -82,11 +139,15 @@ def generate_random_terrain_coordinates(
     grid_x, grid_y = np.meshgrid(x, y)
 
     grid_z = np.random.uniform(min_altitude, max_altitude, size=(rows, cols))
-    grid_z = _smooth_elevation(grid_z, iterations=smoothing_iterations)
+    grid_z = _limit_elevation_gradient(grid_z, cell_size_meters, max_gradient)
+    grid_z = grid_z - grid_z.min() + min_altitude
 
-    z_min, z_max = grid_z.min(), grid_z.max()
-    if z_max > z_min:
-        grid_z = min_altitude + (grid_z - z_min) / (z_max - z_min) * (max_altitude - min_altitude)
+    if grid_z.max() < max_altitude - (max_altitude - min_altitude) * 0.05:
+        print(
+            f"Note: max_gradient={max_gradient} kept this {rows}x{cols} terrain's peak at "
+            f"{grid_z.max():.1f}, well under the requested max_altitude ({max_altitude}) - "
+            f"a tighter cap needs a bigger grid (or a smaller cell_size_meters) to reach the same relief."
+        )
 
     return np.stack((grid_x, grid_y, grid_z), axis=-1)
 

@@ -1,0 +1,7 @@
+{
+    "climb_cost_per_meter": 0.5,
+    "descent_cost_per_meter": 0.3,
+    "base_cost": 1.0,
+    "max_cost": 500.0,
+    "require_return_to_base": true
+}

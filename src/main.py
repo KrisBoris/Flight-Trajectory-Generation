@@ -3,17 +3,28 @@
 from coordinates_grid.coordinates_grid import CoordinatesGrid
 from coordinates_grid.weights_grid import WeightsGrid
 from coordinates_grid.test_data_generator import (
-    generate_random_positions,
     generate_random_terrain_coordinates,
     generate_random_blocked_mask,
 )
+from data_loader import load_mission_data, load_drone_params
 from gui.visualizer import launch_gui
-from trajectory_generator import TrajectoryGenerator
+from pathlib import Path
+from pathfinding_algorithms.trajectory_generator import TrajectoryGenerator
 import numpy as np
 
 
+MISSION_DATA_FILE_NAME = "scenario.json"
+MISSION_DATA = Path(__file__).resolve().parent.parent / "test_data" / MISSION_DATA_FILE_NAME
+DRONE_PARAMS_FILE_NAME = "drone_config.json"
+DRONE_PARAMS_DATA = Path(__file__).resolve().parent / DRONE_PARAMS_FILE_NAME
+
+
+
 def main():
-    rows, cols = 50, 50
+
+    mission_data = load_mission_data(MISSION_DATA)
+    drone_params = load_drone_params(DRONE_PARAMS_DATA)
+    rows, cols = mission_data["rows"], mission_data["cols"]
 
     coordinates_grid = CoordinatesGrid(
         coordinates_values=np.ones((rows, cols)),
@@ -21,14 +32,20 @@ def main():
     )
     coordinates_grid.init_grids(rows, cols)
 
-    search_areas = generate_random_positions(coordinates_grid, amount=15)
-    coordinates_grid.set_searched_areas(search_areas)
+    coordinates_grid.set_searched_areas(mission_data["search_areas"])
 
     terrain_coordinates = generate_random_terrain_coordinates(
-        rows, cols, altitude_range=(0.0, 50.0), cell_size_meters=10.0
+        rows,
+        cols,
+        altitude_range=mission_data["altitude_range"],
+        cell_size_meters=mission_data["cell_size_meters"],
+        max_gradient=mission_data["max_gradient"],
     )
     coordinates_grid.weights_grid.init_from_elevation(
-        terrain_coordinates, climb_cost_per_meter=0.5, descent_cost_per_meter=0.3, base_cost=1.0
+        terrain_coordinates,
+        climb_cost_per_meter=drone_params["climb_cost_per_meter"],
+        descent_cost_per_meter=drone_params["descent_cost_per_meter"],
+        base_cost=drone_params["base_cost"],
     )
 
     blocked_mask = generate_random_blocked_mask(
@@ -36,11 +53,21 @@ def main():
     )
 
     trajectory_generator = TrajectoryGenerator(grid=coordinates_grid)
-    path, total_value, cost_used = trajectory_generator.find_best_path(max_cost=500, blocked_mask=blocked_mask)
+    path, total_value, cost_used = trajectory_generator.find_best_path(
+        max_cost=drone_params["max_cost"],
+        require_return_to_base=drone_params["require_return_to_base"],
+        blocked_mask=blocked_mask,
+    )
 
     print(f"Best path found: {len(path)} steps, total value {total_value:.2f}, cost used {cost_used:.2f}")
 
-    launch_gui(coordinates_grid, path=path, terrain_coordinates=terrain_coordinates, blocked_mask=blocked_mask)
+    launch_gui(
+        coordinates_grid,
+        path=path,
+        terrain_coordinates=terrain_coordinates,
+        blocked_mask=blocked_mask,
+    )
+
 
 
 if __name__ == "__main__":
