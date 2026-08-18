@@ -57,6 +57,7 @@ def main():
         max_cost=drone_params["max_cost"],
         require_return_to_base=drone_params["require_return_to_base"],
         blocked_mask=blocked_mask,
+        algorithm="direct_to_highest_value"
     )
 
     print(f"Best path found: {len(path)} steps, total value {total_value:.2f}, cost used {cost_used:.2f}")

@@ -26,11 +26,3 @@ class Constants():
         (0, -1),   # 6: left
         (-1, -1),  # 7: up-left
     )
-
-    # Climbing (up / up-right / up-left) costs the drone more battery than
-    # the weights_grid base cost; descending (down / down-right / down-left)
-    # costs less. This is a flat, direction-only approximation - if
-    # weights_grid was populated via WeightsGrid.init_from_elevation, the
-    # climb/descend asymmetry is already baked into the base cost from real
-    # terrain, and stacking this multiplier on top would double-penalize it.
-    DIRECTION_COST_MULTIPLIERS: tuple = (1.1, 1.1, 1.0, 0.9, 0.9, 0.9, 1.0, 1.1)

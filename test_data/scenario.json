@@ -2,25 +2,25 @@
     "terrain": {
         "rows": 100,
         "cols": 100,
-        "altitude_range": [0.0, 50.0],
+        "altitude_range": [0.0, 20.0],
         "cell_size_meters": 10.0,
-        "max_gradient": 0.01
+        "max_gradient": 0.001
     },
     "searched_person_locations": [
         {"row": 5, "col": 6, "probability": 9.5},
-        {"row": 6, "col": 8, "probability": 8.0},
-        {"row": 4, "col": 9, "probability": 7.0},
-        {"row": 12, "col": 15, "probability": 4.0},
-        {"row": 18, "col": 22, "probability": 6.0},
-        {"row": 20, "col": 10, "probability": 3.0},
-        {"row": 25, "col": 30, "probability": 5.5},
-        {"row": 28, "col": 12, "probability": 2.0},
-        {"row": 30, "col": 35, "probability": 6.5},
-        {"row": 33, "col": 5, "probability": 4.5},
-        {"row": 35, "col": 40, "probability": 7.5},
-        {"row": 38, "col": 20, "probability": 3.5},
-        {"row": 40, "col": 44, "probability": 5.0},
-        {"row": 44, "col": 25, "probability": 1.5},
-        {"row": 47, "col": 47, "probability": 6.0}
+        {"row": 16, "col": 18, "probability": 8.0},
+        {"row": 24, "col": 29, "probability": 7.0},
+        {"row": 32, "col": 25, "probability": 4.0},
+        {"row": 38, "col": 32, "probability": 6.0},
+        {"row": 40, "col": 40, "probability": 3.0},
+        {"row": 45, "col": 50, "probability": 5.5},
+        {"row": 58, "col": 52, "probability": 2.0},
+        {"row": 60, "col": 65, "probability": 6.5},
+        {"row": 73, "col": 65, "probability": 4.5},
+        {"row": 75, "col": 70, "probability": 7.5},
+        {"row": 78, "col": 70, "probability": 3.5},
+        {"row": 80, "col": 84, "probability": 5.0},
+        {"row": 84, "col": 85, "probability": 1.5},
+        {"row": 97, "col": 97, "probability": 6.0}
     ]
 }

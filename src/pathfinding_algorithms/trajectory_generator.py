@@ -14,7 +14,8 @@ import numpy as np
 # algorithm by writing such a module next to greedy_pathfinding.py and
 # registering its function here.
 PATHFINDING_ALGORITHMS = {
-    "greedy": greedy_pathfinding.find_path_from,
+    "greedy": greedy_pathfinding.find_path_for_highest_neighbor_value,
+    "direct_to_highest_value": greedy_pathfinding.find_path_to_highest_value,
 }
 
 

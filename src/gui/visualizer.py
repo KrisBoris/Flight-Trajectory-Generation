@@ -201,12 +201,13 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         # Now that the terrain is a solid surface rather than a wireframe, a
         # path/marker drawn exactly at ground level gets partly hidden behind
         # it - mplot3d doesn't z-sort separate artists perfectly, it only
-        # approximates depth per-artist. Hovering everything well above the
-        # surface (rather than right at it) and forcing a high zorder on the
-        # path/markers - with a low zorder on the surface itself - makes
-        # mplot3d draw them on top consistently. It also incidentally looks
-        # more like an actual flight path than a line painted onto the ground.
-        hover_height = max((z.max() - z.min()) * 0.15, 1.0)
+        # approximates depth per-artist. Forcing a high zorder on the
+        # path/markers - with a low zorder on the surface itself - is what
+        # actually guarantees mplot3d draws them on top, regardless of how
+        # small the height offset is; hover_height itself only needs to be
+        # just enough to read as "hovering above" rather than "painted onto"
+        # the ground, so it's kept small and close to the surface.
+        hover_height = max((z.max() - z.min()) * 0.03, 0.15)
 
         legend_handles = []
 
@@ -237,7 +238,22 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         path_z = [terrain_coordinates[row, col, 2] + hover_height for row, col in path]
 
         path_line, = axes.plot(path_x, path_y, path_z, color="blue", linewidth=2.5, marker="o", markersize=4, label="path", zorder=11)
-        start_marker = axes.scatter([path_x[0]], [path_y[0]], [path_z[0]], color="black", marker="*", s=150, label="start", zorder=12)
+        # depthshade=False disables mplot3d's default distance-based alpha
+        # fade - without it, this single black star can fade into
+        # near-invisibility against the terrain depending on the current
+        # view/zoom, since there's no averaging with nearby points the way a
+        # dense scatter would have. magenta is used deliberately because it
+        # falls outside PROBABILITY_COLORMAP's red -> yellow -> green range
+        # entirely - a fill color pulled from inside that range (e.g.
+        # yellow) can blend right into terrain of a similar shade, and the
+        # background/default probability often lands close to yellow. The
+        # black edge adds definition against light terrain, and the bigger
+        # size makes it easier to spot at a glance.
+        start_marker = axes.scatter(
+            [path_x[0]], [path_y[0]], [path_z[0]],
+            color="magenta", marker="*", s=400, edgecolors="black", linewidths=1,
+            depthshade=False, label="start", zorder=20,
+        )
 
         return [path_line, start_marker]
 
