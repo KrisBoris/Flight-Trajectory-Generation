@@ -121,33 +121,21 @@ def find_path_to_highest_value(
     """
     1. Find the highest-value unvisited, unblocked cell in
        grid.coordinates_values.
-    2. Head toward it one step at a time. At each step, the "ideal"
-       direction is whichever closes both the row and column distance at
-       once (diagonal) until one axis is aligned, then whichever closes the
-       remaining axis (straight) - the same shortest-path logic as before.
-       If that direction's cell is blocked, rotate to the next direction
-       (direction + 1, wrapping around the 8-direction compass) and check
-       again, up to all 8 directions, until an in-bounds, unblocked cell is
-       found.
-    3. Take that step - cost-checked the same way as
+    2. Walk toward it (see _walk_toward_target: shortest path, rotating
+       around obstacles one cell at a time), cost-checked the same way as
        find_path_for_highest_neighbor_value, including the
-       require_return_to_base reserve - and go back to step 2 (the ideal
-       direction is recalculated from the new position; a detour doesn't
-       change the target).
-    4. Once the target is reached, repeat from step 1. The algorithm stops
-       the moment a step can't be taken at all - every direction is
-       blocked/out of bounds, or even the cheapest available direction would
-       exceed the remaining budget.
+       require_return_to_base reserve.
+    3. If reached, commit the walk (every cell passed through is added to
+       the path). Repeat from step 1.
+    4. The algorithm stops the moment a target can't be fully reached -
+       boxed in, or unaffordable - there is no fallback to a lesser target.
 
     Rotating around one obstacle cell at a time is a simple heuristic, not a
     full pathfinding search - it can fail to find a way around a large or
     maze-like blocked_mask even when one exists, unlike
-    find_path_for_highest_neighbor_value. A generous step cap per target
-    (see max_steps_per_target below) guards against looping indefinitely if
-    that happens.
+    find_path_for_highest_neighbor_value.
     """
     rows, cols = grid.rows, grid.cols
-    weights = grid.weights_grid.weights
     values = grid.coordinates_values
 
     visited = np.zeros((rows, cols), dtype=bool)
@@ -157,11 +145,9 @@ def find_path_to_highest_value(
     total_value = values[start_row, start_col]
     remaining_budget = max_cost
     row, col = start_row, start_col
-
-    # Running cost of retracing every edge committed so far, back to base.
     return_trip_cost = 0.0
 
-    max_steps_per_target = 8 * (rows + cols)
+    max_steps = 8 * (rows + cols)
 
     while True:
         # 1. Find the highest-value unvisited, unblocked cell.
@@ -172,70 +158,23 @@ def find_path_to_highest_value(
 
         target_row, target_col = (int(index) for index in np.unravel_index(np.argmax(candidate_values), candidate_values.shape))
 
-        stuck = False
-        steps_taken = 0
+        # 2-4. Walk toward it; stop entirely if it can't be reached.
+        reached, path_cells, cost, return_cost, value_gained = _walk_toward_target(
+            grid, row, col, target_row, target_col, remaining_budget, return_trip_cost,
+            require_return_to_base, blocked_mask, visited, max_steps,
+        )
 
-        # 2-3. Head toward (target_row, target_col) one step at a time,
-        # rotating around obstacles as they're encountered.
-        while row != target_row or col != target_col:
-            if steps_taken >= max_steps_per_target:
-                stuck = True
-                break
-            steps_taken += 1
-
-            delta_row = 0 if row == target_row else (1 if target_row > row else -1)
-            delta_col = 0 if col == target_col else (1 if target_col > col else -1)
-            ideal_direction = Constants.DIRECTIONS.index((delta_row, delta_col))
-
-            direction = None
-            for attempt in range(8):
-                candidate_direction = (ideal_direction + attempt) % 8
-                candidate_delta_row, candidate_delta_col = Constants.DIRECTIONS[candidate_direction]
-                candidate_row, candidate_col = row + candidate_delta_row, col + candidate_delta_col
-
-                if candidate_row < 0 or candidate_row >= rows or candidate_col < 0 or candidate_col >= cols:
-                    continue
-                if blocked_mask is not None and blocked_mask[candidate_row, candidate_col]:
-                    continue
-
-                direction = candidate_direction
-                next_row, next_col = candidate_row, candidate_col
-                break
-
-            if direction is None:
-                # Boxed in - every direction is blocked or off-grid.
-                stuck = True
-                break
-
-            cost = weights[row, col, direction]
-
-            reverse_cost = 0.0
-            if require_return_to_base:
-                # In an 8-direction compass the opposite of `direction` is
-                # always 4 slots away. This is what flying straight back
-                # along this same edge would cost.
-                reverse_direction = (direction + 4) % 8
-                reverse_cost = weights[next_row, next_col, reverse_direction]
-
-            # The budget must cover this step AND retracing every edge
-            # flown so far - including this new one - back to base.
-            if cost + return_trip_cost + reverse_cost > remaining_budget:
-                stuck = True
-                break
-
-            path.append((next_row, next_col))
-            if not visited[next_row, next_col]:
-                visited[next_row, next_col] = True
-                total_value += values[next_row, next_col]
-
-            remaining_budget -= cost
-            return_trip_cost += reverse_cost
-            row, col = next_row, next_col
-
-        # 4. Couldn't finish reaching this target - stop entirely, no
-        # fallback to a lesser one.
-        if stuck:
+        if not reached:
             break
+
+        # 3. Commit the walk.
+        for next_row, next_col in path_cells:
+            path.append((next_row, next_col))
+            visited[next_row, next_col] = True
+        total_value += value_gained
+        remaining_budget -= cost
+        return_trip_cost += return_cost
+        row, col = target_row, target_col
 
     if not require_return_to_base:
         return path, total_value, max_cost - remaining_budget
@@ -247,3 +186,273 @@ def find_path_to_highest_value(
     total_cost_used = (max_cost - remaining_budget) + return_trip_cost
 
     return path_with_return, total_value, total_cost_used
+
+
+def find_path_by_value_cost_ratio(
+    grid: CoordinatesGrid,
+    start_row: int,
+    start_col: int,
+    max_cost: float,
+    require_return_to_base: bool = True,
+    blocked_mask: np.ndarray = None,
+) -> tuple[list[tuple[int, int]], float, float]:
+    """
+    A tournament between candidate targets, picking whichever gives the
+    better value-collected/cost ratio rather than always the raw highest
+    value:
+
+    1. Sort every cell in grid.coordinates_values from highest to lowest
+       value (once, up front) - this is the same candidate ordering
+       find_path_to_highest_value uses one at a time.
+    2. Take the first two not-yet-visited, unblocked cells from that sorted
+       order. For each, walk to it (see _walk_toward_target: shortest path,
+       rotating around obstacles - the same approach
+       find_path_to_highest_value uses) and compute value_collected / cost
+       for that walk.
+    3. Commit the walk with the better ratio. The other candidate is kept
+       and re-challenged next round against the next fresh candidate from
+       the sorted order - e.g. if the 2nd-highest value won round 1, round
+       2 compares the 1st-highest (the round-1 loser) against the 3rd-
+       highest. A candidate that can't be reached at all (boxed in or
+       unaffordable) is dropped outright rather than kept for a rematch,
+       since positions only move forward and budget only shrinks.
+    4. Repeat from step 2 (pulling one fresh candidate to challenge whatever
+       is currently held over) until neither of the two candidates being
+       compared can be reached - the algorithm stops there, with no
+       fallback to a lesser target.
+    """
+    rows, cols = grid.rows, grid.cols
+    values = grid.coordinates_values
+
+    visited = np.zeros((rows, cols), dtype=bool)
+    visited[start_row, start_col] = True
+
+    path = [(start_row, start_col)]
+    total_value = values[start_row, start_col]
+    remaining_budget = max_cost
+    row, col = start_row, start_col
+    return_trip_cost = 0.0
+
+    max_steps = 8 * (rows + cols)
+
+    sorted_target_indices = np.argsort(-values, axis=None)
+    candidate_pointer = 0
+    pending = None
+
+    while True:
+        # A candidate held over from last round may have been swallowed by
+        # the winning path that was just committed (visited as a
+        # pass-through cell) - drop it rather than re-challenge with it.
+        if pending is not None and visited[pending[0], pending[1]]:
+            pending = None
+
+        if pending is not None:
+            candidate_a = pending
+        else:
+            candidate_a, candidate_pointer = _next_fresh_candidate(sorted_target_indices, candidate_pointer, values, visited, blocked_mask)
+        if candidate_a is None:
+            break  # every cell has been visited or attempted
+
+        candidate_b, candidate_pointer = _next_fresh_candidate(sorted_target_indices, candidate_pointer, values, visited, blocked_mask)
+
+        result_a = _evaluate_candidate(grid, candidate_a, row, col, remaining_budget, return_trip_cost, require_return_to_base, blocked_mask, visited, max_steps)
+        result_b = _evaluate_candidate(grid, candidate_b, row, col, remaining_budget, return_trip_cost, require_return_to_base, blocked_mask, visited, max_steps) if candidate_b is not None else None
+
+        if result_a is None and result_b is None:
+            break  # neither candidate is reachable within the budget - stop
+
+        if result_b is None:
+            winner, pending = result_a, None
+        elif result_a is None:
+            winner, pending = result_b, None
+        elif result_a["ratio"] >= result_b["ratio"]:
+            winner, pending = result_a, candidate_b
+        else:
+            winner, pending = result_b, candidate_a
+
+        for next_row, next_col in winner["path_cells"]:
+            path.append((next_row, next_col))
+            visited[next_row, next_col] = True
+        total_value += winner["value_gained"]
+        remaining_budget -= winner["cost"]
+        return_trip_cost += winner["return_cost"]
+        row, col = winner["target"]
+
+    if not require_return_to_base:
+        return path, total_value, max_cost - remaining_budget
+
+    path_with_return = path + path[-2::-1]
+    total_cost_used = (max_cost - remaining_budget) + return_trip_cost
+
+    return path_with_return, total_value, total_cost_used
+
+
+def _walk_toward_target(
+    grid: CoordinatesGrid,
+    start_row: int,
+    start_col: int,
+    target_row: int,
+    target_col: int,
+    remaining_budget: float,
+    return_trip_cost: float,
+    require_return_to_base: bool,
+    blocked_mask: np.ndarray,
+    visited: np.ndarray,
+    max_steps: int,
+):
+    """
+    Speculatively walks from (start_row, start_col) toward (target_row,
+    target_col) one step at a time: the "ideal" direction closes both the
+    row and column distance at once (diagonal) until one axis is aligned,
+    then closes the remaining axis (straight) - the shortest path on this
+    8-connected grid. If that direction's cell is blocked or off-grid,
+    directions are tried in rotation (direction + 1, wrapping around the
+    8-direction compass) until an open one is found.
+
+    This does NOT mutate `visited`, `remaining_budget` or `return_trip_cost`
+    - it only reads them, so a caller can evaluate several candidate targets
+    from the same position before deciding which one (if any) to actually
+    commit. `visited` is used only to avoid double-counting a cell's value
+    if the walk passes through somewhere already collected on an earlier,
+    already-committed leg.
+
+    Returns (reached, path_cells, cost, return_cost, value_gained):
+      - reached: False if the walk got stuck (boxed in on all 8 sides, hit
+        max_steps, or the next step would exceed remaining_budget) before
+        arriving at the target - the other values are meaningless if so.
+      - path_cells: the (row, col) cells stepped onto, in order, NOT
+        including the starting cell.
+      - cost: total forward cost of the walk.
+      - return_cost: total cost of retracing this walk's own edges back
+        (0.0 if require_return_to_base is False) - added to, not replacing,
+        return_trip_cost from any previously committed legs.
+      - value_gained: sum of grid.coordinates_values over path_cells, minus
+        any cells already in `visited` (or repeated within this same walk).
+    """
+    rows, cols = grid.rows, grid.cols
+    weights = grid.weights_grid.weights
+    values = grid.coordinates_values
+
+    path_cells = []
+    cost = 0.0
+    return_cost = 0.0
+    value_gained = 0.0
+    seen_this_walk = set()
+
+    row, col = start_row, start_col
+    steps = 0
+
+    while row != target_row or col != target_col:
+        if steps >= max_steps:
+            return False, [], 0.0, 0.0, 0.0
+        steps += 1
+
+        delta_row = 0 if row == target_row else (1 if target_row > row else -1)
+        delta_col = 0 if col == target_col else (1 if target_col > col else -1)
+        ideal_direction = Constants.DIRECTIONS.index((delta_row, delta_col))
+
+        direction = None
+        next_row = next_col = None
+        for attempt in range(8):
+            candidate_direction = (ideal_direction + attempt) % 8
+            candidate_delta_row, candidate_delta_col = Constants.DIRECTIONS[candidate_direction]
+            candidate_row, candidate_col = row + candidate_delta_row, col + candidate_delta_col
+
+            if candidate_row < 0 or candidate_row >= rows or candidate_col < 0 or candidate_col >= cols:
+                continue
+            if blocked_mask is not None and blocked_mask[candidate_row, candidate_col]:
+                continue
+
+            direction = candidate_direction
+            next_row, next_col = candidate_row, candidate_col
+            break
+
+        if direction is None:
+            return False, [], 0.0, 0.0, 0.0
+
+        step_cost = weights[row, col, direction]
+
+        step_reverse_cost = 0.0
+        if require_return_to_base:
+            reverse_direction = (direction + 4) % 8
+            step_reverse_cost = weights[next_row, next_col, reverse_direction]
+
+        # The budget must cover every edge walked so far this leg AND the
+        # committed return-trip reserve AND retracing this new edge too.
+        if cost + step_cost + return_trip_cost + return_cost + step_reverse_cost > remaining_budget:
+            return False, [], 0.0, 0.0, 0.0
+
+        cost += step_cost
+        return_cost += step_reverse_cost
+        path_cells.append((next_row, next_col))
+
+        if not visited[next_row, next_col] and (next_row, next_col) not in seen_this_walk:
+            value_gained += values[next_row, next_col]
+            seen_this_walk.add((next_row, next_col))
+
+        row, col = next_row, next_col
+
+    return True, path_cells, cost, return_cost, value_gained
+
+
+def _next_fresh_candidate(
+    sorted_target_indices: np.ndarray,
+    candidate_pointer: int,
+    values: np.ndarray,
+    visited: np.ndarray,
+    blocked_mask: np.ndarray,
+):
+    """
+    Scans sorted_target_indices (flat indices into `values`, highest value
+    first) starting at candidate_pointer for the next cell that's neither
+    already visited nor blocked. As a plain function rather than a closure,
+    it can't remember candidate_pointer itself between calls - the caller
+    must keep track of the returned pointer and pass it back in next time.
+
+    Returns ((row, col), next_pointer), or (None, next_pointer) if no
+    candidate remains.
+    """
+    while candidate_pointer < len(sorted_target_indices):
+        flat_index = sorted_target_indices[candidate_pointer]
+        candidate_pointer += 1
+        candidate_row, candidate_col = (int(index) for index in np.unravel_index(flat_index, values.shape))
+        if visited[candidate_row, candidate_col]:
+            continue
+        if blocked_mask is not None and blocked_mask[candidate_row, candidate_col]:
+            continue
+        return (candidate_row, candidate_col), candidate_pointer
+    return None, candidate_pointer
+
+
+def _evaluate_candidate(
+    grid: CoordinatesGrid,
+    candidate: tuple[int, int],
+    row: int,
+    col: int,
+    remaining_budget: float,
+    return_trip_cost: float,
+    require_return_to_base: bool,
+    blocked_mask: np.ndarray,
+    visited: np.ndarray,
+    max_steps: int,
+):
+    """
+    Speculatively walks from (row, col) toward candidate (see
+    _walk_toward_target) and summarizes the outcome as a dict, or returns
+    None if the target can't be reached within remaining_budget.
+    """
+    target_row, target_col = candidate
+    reached, path_cells, cost, return_cost, value_gained = _walk_toward_target(
+        grid, row, col, target_row, target_col, remaining_budget, return_trip_cost,
+        require_return_to_base, blocked_mask, visited, max_steps,
+    )
+    if not reached or cost <= 0:
+        return None
+    return {
+        "target": candidate,
+        "path_cells": path_cells,
+        "cost": cost,
+        "return_cost": return_cost,
+        "value_gained": value_gained,
+        "ratio": value_gained / cost,
+    }
