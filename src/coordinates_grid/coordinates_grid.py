@@ -45,7 +45,7 @@ class CoordinatesGrid():
             print(f"Grid size must be greater than zero, not {x}x{y}")
             return False
         
-        self.coordinates_values = np.ones([x, y], dtype=np.float64)
+        self.coordinates_values = np.full([x, y], Constants.DEFAULT_PROBABILITY, dtype=np.float64)
         return True
 
 

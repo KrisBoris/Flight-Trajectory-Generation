@@ -17,6 +17,7 @@ PATHFINDING_ALGORITHMS = {
     "greedy": greedy_pathfinding.find_path_for_highest_neighbor_value,
     "direct_to_highest_value": greedy_pathfinding.find_path_to_highest_value,
     "value_cost_ratio": greedy_pathfinding.find_path_by_value_cost_ratio,
+    "lowest_cost": greedy_pathfinding.find_path_by_lowest_cost,
 }
 
 

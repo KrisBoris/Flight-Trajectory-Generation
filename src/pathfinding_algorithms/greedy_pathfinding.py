@@ -203,24 +203,37 @@ def find_path_by_value_cost_ratio(
 
     1. Sort every cell in grid.coordinates_values from highest to lowest
        value (once, up front) - this is the same candidate ordering
-       find_path_to_highest_value uses one at a time.
-    2. Take the first two not-yet-visited, unblocked cells from that sorted
-       order. For each, walk to it (see _walk_toward_target: shortest path,
-       rotating around obstacles - the same approach
-       find_path_to_highest_value uses) and compute value_collected / cost
-       for that walk.
-    3. Commit the walk with the better ratio. The other candidate is kept
-       and re-challenged next round against the next fresh candidate from
-       the sorted order - e.g. if the 2nd-highest value won round 1, round
+       find_path_to_highest_value uses one at a time. Cells at or below
+       Constants.DEFAULT_PROBABILITY (CoordinatesGrid.init_empty_grid's
+       "no information yet" fill value) are never candidates - see
+       _next_fresh_candidate - since this function is specifically about
+       ranking targets by value, and an untouched background cell isn't a
+       real one.
+    2. Take the first CANDIDATES_PER_ROUND not-yet-visited, unblocked cells
+       from that sorted order. For each, walk to it (see
+       _walk_toward_target: shortest path, rotating around obstacles - the
+       same approach find_path_to_highest_value uses) and compute
+       value_collected / cost for that walk. A candidate that can't be
+       reached at all (boxed in or unaffordable) is dropped outright rather
+       than kept for a rematch, since positions only move forward and
+       budget only shrinks.
+    3. Commit the walk with the best ratio among the reachable candidates.
+       The rest of the reachable-but-not-chosen candidates are kept and
+       re-challenged next round, topped back up to CANDIDATES_PER_ROUND with
+       fresh candidates from the sorted order - e.g. with
+       CANDIDATES_PER_ROUND = 2, if the 2nd-highest value won round 1, round
        2 compares the 1st-highest (the round-1 loser) against the 3rd-
-       highest. A candidate that can't be reached at all (boxed in or
-       unaffordable) is dropped outright rather than kept for a rematch,
-       since positions only move forward and budget only shrinks.
-    4. Repeat from step 2 (pulling one fresh candidate to challenge whatever
-       is currently held over) until neither of the two candidates being
-       compared can be reached - the algorithm stops there, with no
-       fallback to a lesser target.
+       highest.
+    4. Repeat from step 2 until none of the round's candidates (held-over or
+       fresh) can be reached - the algorithm stops there, with no fallback
+       to a lesser target.
     """
+    # How many candidates are compared each round. 2 reproduces the simplest
+    # "compare this one against the next one" tournament; a higher number
+    # widens each round's search at the cost of more speculative walks per
+    # round (see _evaluate_candidate).
+    CANDIDATES_PER_ROUND = 2
+
     rows, cols = grid.rows, grid.cols
     values = grid.coordinates_values
 
@@ -237,38 +250,35 @@ def find_path_by_value_cost_ratio(
 
     sorted_target_indices = np.argsort(-values, axis=None)
     candidate_pointer = 0
-    pending = None
+    pending = []  # candidates held over from the previous round
 
     while True:
         # A candidate held over from last round may have been swallowed by
         # the winning path that was just committed (visited as a
         # pass-through cell) - drop it rather than re-challenge with it.
-        if pending is not None and visited[pending[0], pending[1]]:
-            pending = None
+        pending = [candidate for candidate in pending if not visited[candidate[0], candidate[1]]]
 
-        if pending is not None:
-            candidate_a = pending
-        else:
-            candidate_a, candidate_pointer = _next_fresh_candidate(sorted_target_indices, candidate_pointer, values, visited, blocked_mask)
-        if candidate_a is None:
+        candidates = list(pending)
+        while len(candidates) < CANDIDATES_PER_ROUND:
+            fresh_candidate, candidate_pointer = _next_fresh_candidate(sorted_target_indices, candidate_pointer, values, visited, blocked_mask)
+            if fresh_candidate is None:
+                break
+            candidates.append(fresh_candidate)
+
+        if not candidates:
             break  # every cell has been visited or attempted
 
-        candidate_b, candidate_pointer = _next_fresh_candidate(sorted_target_indices, candidate_pointer, values, visited, blocked_mask)
+        evaluated = [
+            (candidate, _evaluate_candidate(grid, candidate, row, col, remaining_budget, return_trip_cost, require_return_to_base, blocked_mask, visited, max_steps))
+            for candidate in candidates
+        ]
+        reachable = [(candidate, result) for candidate, result in evaluated if result is not None]
 
-        result_a = _evaluate_candidate(grid, candidate_a, row, col, remaining_budget, return_trip_cost, require_return_to_base, blocked_mask, visited, max_steps)
-        result_b = _evaluate_candidate(grid, candidate_b, row, col, remaining_budget, return_trip_cost, require_return_to_base, blocked_mask, visited, max_steps) if candidate_b is not None else None
+        if not reachable:
+            break  # none of this round's candidates are reachable within the budget - stop
 
-        if result_a is None and result_b is None:
-            break  # neither candidate is reachable within the budget - stop
-
-        if result_b is None:
-            winner, pending = result_a, None
-        elif result_a is None:
-            winner, pending = result_b, None
-        elif result_a["ratio"] >= result_b["ratio"]:
-            winner, pending = result_a, candidate_b
-        else:
-            winner, pending = result_b, candidate_a
+        winning_candidate, winner = max(reachable, key=lambda entry: entry[1]["ratio"])
+        pending = [candidate for candidate, _ in reachable if candidate != winning_candidate]
 
         for next_row, next_col in winner["path_cells"]:
             path.append((next_row, next_col))
@@ -285,6 +295,125 @@ def find_path_by_value_cost_ratio(
     total_cost_used = (max_cost - remaining_budget) + return_trip_cost
 
     return path_with_return, total_value, total_cost_used
+
+
+def find_path_by_lowest_cost(
+    grid: CoordinatesGrid,
+    start_row: int,
+    start_col: int,
+    max_cost: float,
+    require_return_to_base: bool = True,
+    blocked_mask: np.ndarray = None,
+) -> tuple[list[tuple[int, int]], float, float]:
+    """
+    The same tournament structure as find_path_by_value_cost_ratio, but
+    picking whichever candidate is cheapest to reach rather than whichever
+    has the best value/cost ratio:
+
+    1. Sort every cell in grid.coordinates_values from highest to lowest
+       value (once, up front) - purely to pick a consistent, deterministic
+       set of candidates each round; value itself doesn't otherwise factor
+       into the choice here. Cells at or below Constants.DEFAULT_PROBABILITY
+       (CoordinatesGrid.init_empty_grid's "no information yet" fill value)
+       are never candidates - see _next_fresh_candidate. Without this, a
+       grid mostly filled with tied background cells would have this
+       function spend nearly every round comparing meaningless candidates,
+       and since a straight-line hop is measurably cheaper than a diagonal
+       one of the same length (see WeightsGrid.init_from_elevation), it
+       would systematically prefer whichever tied background cell happened
+       to be reachable in a straight line - producing a path that hugs rows
+       and columns instead of heading toward real targets.
+    2. Take the first CANDIDATES_PER_ROUND not-yet-visited, unblocked cells
+       from that sorted order. For each, walk to it (see
+       _walk_toward_target: shortest path, rotating around obstacles) and
+       note its cost. A candidate that can't be reached at all (boxed in or
+       too expensive for the remaining budget) is dropped outright rather
+       than kept for a rematch, since positions only move forward and
+       budget only shrinks.
+    3. Commit the walk with the lowest cost among the reachable candidates.
+       The rest of the reachable-but-not-chosen candidates are kept and
+       re-challenged next round, topped back up to CANDIDATES_PER_ROUND with
+       fresh candidates from the sorted order.
+    4. Repeat from step 2 until none of the round's candidates (held-over or
+       fresh) can be reached within the remaining budget - the algorithm
+       stops there, with no fallback to a lesser target.
+    """
+    # How many candidates are compared each round - see
+    # find_path_by_value_cost_ratio's CANDIDATES_PER_ROUND for the tradeoff.
+    CANDIDATES_PER_ROUND = 10
+
+    rows, cols = grid.rows, grid.cols
+    values = grid.coordinates_values
+
+    visited = np.zeros((rows, cols), dtype=bool)
+    visited[start_row, start_col] = True
+
+    path = [(start_row, start_col)]
+    total_value = values[start_row, start_col]
+    remaining_budget = max_cost
+    row, col = start_row, start_col
+    return_trip_cost = 0.0
+
+    max_steps = 8 * (rows + cols)
+
+    sorted_target_indices = np.argsort(-values, axis=None)
+    candidate_pointer = 0
+    pending = []  # candidates held over from the previous round
+
+    while True:
+        # A candidate held over from last round may have been swallowed by
+        # the winning path that was just committed (visited as a
+        # pass-through cell) - drop it rather than re-challenge with it.
+        pending = [candidate for candidate in pending if not visited[candidate[0], candidate[1]]]
+
+        candidates = list(pending)
+        while len(candidates) < CANDIDATES_PER_ROUND:
+            fresh_candidate, candidate_pointer = _next_fresh_candidate(sorted_target_indices, candidate_pointer, values, visited, blocked_mask)
+            if fresh_candidate is None:
+                break
+            candidates.append(fresh_candidate)
+
+        if not candidates:
+            break  # every cell has been visited or attempted
+
+        evaluated = [
+            (candidate, _evaluate_candidate(grid, candidate, row, col, remaining_budget, return_trip_cost, require_return_to_base, blocked_mask, visited, max_steps))
+            for candidate in candidates
+        ]
+        reachable = [(candidate, result) for candidate, result in evaluated if result is not None]
+
+        if not reachable:
+            break  # every candidate this round costs more than the remaining budget (or is unreachable) - stop
+
+        winning_candidate, winner = min(reachable, key=lambda entry: entry[1]["cost"])
+        pending = [candidate for candidate, _ in reachable if candidate != winning_candidate]
+
+        for next_row, next_col in winner["path_cells"]:
+            path.append((next_row, next_col))
+            visited[next_row, next_col] = True
+        total_value += winner["value_gained"]
+        remaining_budget -= winner["cost"]
+        return_trip_cost += winner["return_cost"]
+        row, col = winner["target"]
+
+    if not require_return_to_base:
+        return path, total_value, max_cost - remaining_budget
+
+    path_with_return = path + path[-2::-1]
+    total_cost_used = (max_cost - remaining_budget) + return_trip_cost
+
+    return path_with_return, total_value, total_cost_used
+
+
+# Rotation offsets tried, in order, when the ideal direction is blocked -
+# ordered by absolute angular distance from that ideal direction (itself,
+# then its immediate neighbor on each side, working outward to the
+# opposite direction) rather than always spinning the same way. Without
+# this, a walker deflected off its ideal diagonal by an obstacle would keep
+# rotating in a single direction (see _walk_toward_target), which can make
+# it hug a wall running parallel to an edge for much longer than necessary
+# instead of cutting back toward the target as soon as an opening appears.
+_ROTATION_OFFSETS = (0, 1, -1, 2, -2, 3, -3, 4)
 
 
 def _walk_toward_target(
@@ -305,9 +434,11 @@ def _walk_toward_target(
     target_col) one step at a time: the "ideal" direction closes both the
     row and column distance at once (diagonal) until one axis is aligned,
     then closes the remaining axis (straight) - the shortest path on this
-    8-connected grid. If that direction's cell is blocked or off-grid,
-    directions are tried in rotation (direction + 1, wrapping around the
-    8-direction compass) until an open one is found.
+    8-connected grid. If that direction's cell is blocked or off-grid, the
+    next-closest direction to it is tried instead - see _ROTATION_OFFSETS -
+    until an open one is found, so a detour always bends back toward the
+    target as gently as possible rather than spinning off in a fixed
+    direction.
 
     This does NOT mutate `visited`, `remaining_budget` or `return_trip_cost`
     - it only reads them, so a caller can evaluate several candidate targets
@@ -353,8 +484,8 @@ def _walk_toward_target(
 
         direction = None
         next_row = next_col = None
-        for attempt in range(8):
-            candidate_direction = (ideal_direction + attempt) % 8
+        for offset in _ROTATION_OFFSETS:
+            candidate_direction = (ideal_direction + offset) % 8
             candidate_delta_row, candidate_delta_col = Constants.DIRECTIONS[candidate_direction]
             candidate_row, candidate_col = row + candidate_delta_row, col + candidate_delta_col
 
@@ -405,9 +536,17 @@ def _next_fresh_candidate(
     """
     Scans sorted_target_indices (flat indices into `values`, highest value
     first) starting at candidate_pointer for the next cell that's neither
-    already visited nor blocked. As a plain function rather than a closure,
-    it can't remember candidate_pointer itself between calls - the caller
-    must keep track of the returned pointer and pass it back in next time.
+    already visited nor blocked - and whose value is above
+    Constants.DEFAULT_PROBABILITY, the "no information yet" fill value
+    CoordinatesGrid.init_empty_grid gives every cell. Since these two
+    functions specifically reason about value (a ratio to cost, or picking
+    the cheapest among value-ranked candidates), an untouched background
+    cell isn't a meaningful target - including it just means comparing
+    against noise, which is what was producing the row/column-hugging
+    pattern seen when tied background cells vastly outnumbered real search
+    areas. As a plain function rather than a closure, it can't remember
+    candidate_pointer itself between calls - the caller must keep track of
+    the returned pointer and pass it back in next time.
 
     Returns ((row, col), next_pointer), or (None, next_pointer) if no
     candidate remains.
@@ -416,6 +555,10 @@ def _next_fresh_candidate(
         flat_index = sorted_target_indices[candidate_pointer]
         candidate_pointer += 1
         candidate_row, candidate_col = (int(index) for index in np.unravel_index(flat_index, values.shape))
+        if values[candidate_row, candidate_col] <= Constants.DEFAULT_PROBABILITY:
+            # Every cell after this one in the sorted order is <= this one's
+            # value too, so none of the rest can be real targets either.
+            break
         if visited[candidate_row, candidate_col]:
             continue
         if blocked_mask is not None and blocked_mask[candidate_row, candidate_col]:
