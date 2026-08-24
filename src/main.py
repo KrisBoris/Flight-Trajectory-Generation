@@ -13,7 +13,7 @@ from pathfinding_algorithms.trajectory_generator import TrajectoryGenerator
 import numpy as np
 
 
-MISSION_DATA_FILE_NAME = "scenario.json"
+MISSION_DATA_FILE_NAME = "scenario2.json"
 MISSION_DATA = Path(__file__).resolve().parent.parent / "test_data" / MISSION_DATA_FILE_NAME
 DRONE_PARAMS_FILE_NAME = "drone_config.json"
 DRONE_PARAMS_DATA = Path(__file__).resolve().parent / DRONE_PARAMS_FILE_NAME
@@ -52,8 +52,17 @@ def main():
         coordinates_grid, blocked_shapes=[np.ones((2, 2)), np.ones((1, 3))]
     )
 
+    #     PATHFINDING_ALGORITHMS = {
+    #     "greedy": greedy_pathfinding.find_path_for_highest_neighbor_value,
+    #     "direct_to_highest_value": greedy_pathfinding.find_path_to_highest_value,
+    #     "value_cost_ratio": greedy_pathfinding.find_path_by_value_cost_ratio,
+    #     "lowest_cost": greedy_pathfinding.find_path_by_lowest_cost,
+    #     "ant_colony": metaheuristic_pathfinding.find_path_by_ant_colony,
+    # }
     trajectory_generator = TrajectoryGenerator(grid=coordinates_grid)
     path, total_value, cost_used = trajectory_generator.find_best_path(
+        start_row=mission_data["start_row"],
+        start_col=mission_data["start_col"],
         max_cost=drone_params["max_cost"],
         require_return_to_base=drone_params["require_return_to_base"],
         blocked_mask=blocked_mask,

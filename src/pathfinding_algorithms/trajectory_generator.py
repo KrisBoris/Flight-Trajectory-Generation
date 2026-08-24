@@ -2,7 +2,7 @@
 
 from coordinates_grid.coordinates_grid import CoordinatesGrid
 from dataclasses import dataclass
-from pathfinding_algorithms import greedy_pathfinding
+from pathfinding_algorithms import greedy_pathfinding, metaheuristic_pathfinding
 import numpy as np
 
 
@@ -18,15 +18,19 @@ PATHFINDING_ALGORITHMS = {
     "direct_to_highest_value": greedy_pathfinding.find_path_to_highest_value,
     "value_cost_ratio": greedy_pathfinding.find_path_by_value_cost_ratio,
     "lowest_cost": greedy_pathfinding.find_path_by_lowest_cost,
+    "ant_colony": metaheuristic_pathfinding.find_path_by_ant_colony,
+    "tabu_search": metaheuristic_pathfinding.find_path_by_tabu_search,
 }
 
 
 @dataclass
 class TrajectoryGenerator():
     """
-    Searches a CoordinatesGrid for the highest-value path, constrained by a
-    total movement-cost budget taken from weights_grid. The single-start
-    search strategy is pluggable - see PATHFINDING_ALGORITHMS.
+    Searches a CoordinatesGrid for the highest-value path from a fixed
+    starting cell (e.g. the rescue team's base - see
+    data_loader.load_mission_data's start_location), constrained by a total
+    movement-cost budget taken from weights_grid. The search strategy is
+    pluggable - see PATHFINDING_ALGORITHMS.
     """
 
     grid: CoordinatesGrid
@@ -34,6 +38,8 @@ class TrajectoryGenerator():
 
     def find_best_path(
         self,
+        start_row: int,
+        start_col: int,
         max_cost: float,
         require_return_to_base: bool = True,
         blocked_mask: np.ndarray = None,
@@ -41,11 +47,21 @@ class TrajectoryGenerator():
     ) -> tuple[list[tuple[int, int]], float, float]:
         """
         Runs the selected pathfinding algorithm (a key in
-        PATHFINDING_ALGORITHMS) from every cell in the grid and returns the
-        path with the highest total collected value.
+        PATHFINDING_ALGORITHMS) from (start_row, start_col) and returns its
+        path, total collected value, and cost used.
         """
         if max_cost < 0:
             print(f"max_cost must be non-negative, not {max_cost}")
+            return [], 0.0, 0.0
+
+        if not (0 <= start_row < self.grid.rows and 0 <= start_col < self.grid.cols):
+            print(f"start_row/start_col ({start_row}, {start_col}) is outside the grid ({self.grid.rows}x{self.grid.cols})")
+            return [], 0.0, 0.0
+
+        # The drone can't launch from a cell it isn't allowed to enter in
+        # the first place.
+        if blocked_mask is not None and blocked_mask[start_row, start_col]:
+            print(f"start_row/start_col ({start_row}, {start_col}) is blocked")
             return [], 0.0, 0.0
 
         find_path_from = PATHFINDING_ALGORITHMS.get(algorithm)
@@ -53,32 +69,14 @@ class TrajectoryGenerator():
             print(f"Unknown algorithm '{algorithm}', expected one of {list(PATHFINDING_ALGORITHMS)}")
             return [], 0.0, 0.0
 
-        best_path: list[tuple[int, int]] = []
-        best_total_value = -np.inf
-        best_cost_used = 0.0
-
-        for row in range(self.grid.rows):
-            for col in range(self.grid.cols):
-                # Can't launch the search from a cell the drone isn't allowed
-                # to enter in the first place.
-                if blocked_mask is not None and blocked_mask[row, col]:
-                    continue
-
-                path, total_value, cost_used = find_path_from(
-                    self.grid,
-                    row,
-                    col,
-                    max_cost,
-                    require_return_to_base=require_return_to_base,
-                    blocked_mask=blocked_mask,
-                )
-
-                if total_value > best_total_value:
-                    best_path = path
-                    best_total_value = total_value
-                    best_cost_used = cost_used
-
-        return best_path, best_total_value, best_cost_used
+        return find_path_from(
+            self.grid,
+            start_row,
+            start_col,
+            max_cost,
+            require_return_to_base=require_return_to_base,
+            blocked_mask=blocked_mask,
+        )
 
 
 if __name__ == "__main__":

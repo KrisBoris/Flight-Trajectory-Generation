@@ -3,6 +3,7 @@
 from coordinates_grid.coordinates_grid import CoordinatesGrid
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - registers the "3d" projection
 from PyQt5 import QtWidgets
@@ -19,6 +20,10 @@ BLOCKED_LABEL = "blocked (no-fly)"
 
 # Target cells-across for the 3D surface mesh - see _build_3d_view.
 SURFACE_MESH_TARGET = 50
+
+# Roughly how many direction arrows to draw along a path, regardless of its
+# length - see _path_arrow_indices.
+PATH_ARROW_COUNT = 60
 
 
 def _max_pool_2d(array: np.ndarray, block_size: int) -> np.ndarray:
@@ -47,6 +52,80 @@ def _max_pool_2d(array: np.ndarray, block_size: int) -> np.ndarray:
             pooled[i, j] = block.max()
 
     return pooled
+
+
+def _path_end_index(path: list) -> int:
+    """
+    Index of the point actually worth marking as "the end" of the path - not
+    necessarily path[-1]: every pathfinding algorithm appends a return leg
+    (path + path[-2::-1]) when require_return_to_base is set, which makes
+    path[-1] just the start cell again. Marking that would sit exactly on
+    top of the start marker and show nothing new, so what's actually useful
+    is the turnaround point - the farthest cell the drone reached before
+    heading back.
+
+    A return-trip path is always a palindrome (the outbound cells, then the
+    same cells reversed), so its center index is that turnaround point.
+    Detected here via path[0] == path[-1] (with no return leg, the path
+    isn't generally a palindrome, so path[-1] is already the genuine
+    endpoint) rather than threading a require_return_to_base flag through
+    the whole call chain just for this.
+    """
+    if len(path) > 1 and path[0] == path[-1]:
+        return len(path) // 2
+    return len(path) - 1
+
+
+def _path_arrow_indices(path_length: int) -> np.ndarray:
+    """
+    Indices i (0 <= i < path_length - 1) at which to draw a direction arrow
+    from path[i] to path[i + 1], spaced out so a long path (which can be
+    thousands of cells, especially with a return leg) gets roughly
+    PATH_ARROW_COUNT arrows rather than one per edge - the latter would be
+    unreadable clutter and slow to render. Returns an empty array for a path
+    with fewer than 2 cells (nothing to point between).
+    """
+    if path_length < 2:
+        return np.array([], dtype=int)
+
+    stride = max(1, (path_length - 1) // PATH_ARROW_COUNT)
+    return np.arange(0, path_length - 1, stride)
+
+
+def _direction_chevron_offsets(dx: float, dy: float, wing_length: float, wing_angle_degrees: float = 25.0) -> tuple:
+    """
+    Given a horizontal direction vector (dx, dy) pointing from an arrow's
+    tail toward its tip, returns the two (offset_x, offset_y) vectors - each
+    wing_length long, swept wing_angle_degrees to either side of straight
+    back along the shaft - that a chevron arrowhead's two wings should
+    extend from the tip.
+
+    This is a plain 2D rotation kept entirely in the horizontal plane,
+    deliberately not using matplotlib's own 3D quiver arrowheads: quiver's
+    arrowhead geometry is computed in raw data coordinates and then carried
+    through mplot3d's per-axis independent scaling, so on a plot where axes
+    are scaled very differently from each other - exactly this app's case,
+    where terrain height commonly spans under a meter while x/y span
+    hundreds of meters (a low max_gradient scenario) - the arrowhead wings
+    get stretched by whichever axis they happen to have a component in,
+    rendering as huge, wildly spiked zigzags instead of small arrowheads.
+    Plain line segments between literal (x, y, z) coordinates - as used
+    here, and as the path line itself already uses - don't have that
+    problem, since there's no implied "correct angle" for a 2-point segment
+    to preserve; it just connects its two literal endpoints.
+    """
+    horizontal_length = np.hypot(dx, dy)
+    if horizontal_length == 0:
+        return (0.0, 0.0), (0.0, 0.0)
+
+    back_x = -dx / horizontal_length * wing_length
+    back_y = -dy / horizontal_length * wing_length
+    angle = np.radians(wing_angle_degrees)
+
+    def rotate(x, y, theta):
+        return x * np.cos(theta) - y * np.sin(theta), x * np.sin(theta) + y * np.cos(theta)
+
+    return rotate(back_x, back_y, angle), rotate(back_x, back_y, -angle)
 
 
 class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
@@ -135,7 +214,31 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         path_line, = axes.plot(path_cols, path_rows, color="blue", linewidth=1.5, marker="o", markersize=3, label="path")
         start_marker, = axes.plot(path_cols[0], path_rows[0], color="black", marker="*", markersize=16, label="start")
 
-        return [path_line, start_marker]
+        handles = [path_line, start_marker]
+
+        end_index = _path_end_index(path)
+        if end_index != 0:
+            end_marker, = axes.plot(
+                path_cols[end_index], path_rows[end_index],
+                color="red", marker="X", markersize=13, markeredgecolor="black", label="end", zorder=6,
+            )
+            handles.append(end_marker)
+
+        arrow_indices = _path_arrow_indices(len(path))
+        if arrow_indices.size > 0:
+            arrow_x = np.asarray(path_cols)[arrow_indices]
+            arrow_y = np.asarray(path_rows)[arrow_indices]
+            arrow_dx = np.asarray(path_cols)[arrow_indices + 1] - arrow_x
+            arrow_dy = np.asarray(path_rows)[arrow_indices + 1] - arrow_y
+
+            axes.quiver(
+                arrow_x, arrow_y, arrow_dx, arrow_dy,
+                angles="xy", scale_units="xy", scale=1,
+                color="black", width=0.003, headwidth=5, headlength=6, zorder=5,
+            )
+            handles.append(Line2D([0], [0], color="black", marker=">", linestyle="None", markersize=8, label="direction"))
+
+        return handles
 
 
     def _build_3d_view(
@@ -255,7 +358,37 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
             depthshade=False, label="start", zorder=20,
         )
 
-        return [path_line, start_marker]
+        handles = [path_line, start_marker]
+
+        # See _path_end_index - with a return leg, path[-1] is just the
+        # start cell again, so the real "end" worth marking is the
+        # turnaround point.
+        end_index = _path_end_index(path)
+        if end_index != 0:
+            end_marker = axes.scatter(
+                [path_x[end_index]], [path_y[end_index]], [path_z[end_index]],
+                color="red", marker="*", s=400, edgecolors="black", linewidths=1,
+                depthshade=False, label="end", zorder=20,
+            )
+            handles.append(end_marker)
+
+        arrow_indices = _path_arrow_indices(len(path))
+        if arrow_indices.size > 0:
+            for i in arrow_indices:
+                segment_dx = path_x[i + 1] - path_x[i]
+                segment_dy = path_y[i + 1] - path_y[i]
+                tip_x, tip_y, tip_z = path_x[i + 1], path_y[i + 1], path_z[i + 1]
+                # Wing length scales with this segment's own horizontal
+                # length (a fixed grid-step distance) rather than the
+                # plot's overall span, so chevrons stay a legible size
+                # regardless of how large the map is.
+                wing_length = np.hypot(segment_dx, segment_dy) * 0.6
+                for wing_dx, wing_dy in _direction_chevron_offsets(segment_dx, segment_dy, wing_length):
+                    axes.plot([tip_x, tip_x + wing_dx], [tip_y, tip_y + wing_dy], [tip_z, tip_z], color="black", linewidth=2, zorder=15)
+
+            handles.append(Line2D([0], [0], color="black", marker=">", linestyle="None", markersize=8, label="direction"))
+
+        return handles
 
 
 def launch_gui(

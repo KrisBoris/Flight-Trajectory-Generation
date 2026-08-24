@@ -19,11 +19,16 @@ def load_mission_data(file_path) -> dict:
           "cell_size_meters": float,        (optional, default 1.0)
           "max_gradient": float             (optional, default 0.3)
         },
+        "start_location": {"row": int, "col": int},
         "searched_person_locations": [
           {"row": int, "col": int, "probability": float},
           ...
         ]
       }
+
+    start_location is where the drone launches from and returns to (e.g. the
+    rescue team's base) - a fixed point dictated by the real scenario, not
+    something TrajectoryGenerator gets to choose.
 
     Returns a dict:
       {
@@ -31,6 +36,7 @@ def load_mission_data(file_path) -> dict:
         "altitude_range": (min_altitude, max_altitude),
         "cell_size_meters": float,
         "max_gradient": float,
+        "start_row": int, "start_col": int,
         "search_areas": list of (3,) float ndarrays (row, col, probability) -
           the same layout CoordinatesGrid.set_searched_areas expects.
       }
@@ -39,6 +45,7 @@ def load_mission_data(file_path) -> dict:
         raw_data = json.load(data_file)
 
     terrain = raw_data["terrain"]
+    start_location = raw_data["start_location"]
     locations = raw_data.get("searched_person_locations", [])
 
     search_areas = [
@@ -52,6 +59,8 @@ def load_mission_data(file_path) -> dict:
         "altitude_range": tuple(terrain["altitude_range"]),
         "cell_size_meters": terrain.get("cell_size_meters", 1.0),
         "max_gradient": terrain.get("max_gradient", 0.3),
+        "start_row": start_location["row"],
+        "start_col": start_location["col"],
         "search_areas": search_areas,
     }
 

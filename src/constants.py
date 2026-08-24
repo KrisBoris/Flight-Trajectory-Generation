@@ -18,7 +18,7 @@ class Constants():
     # genuine signal. Pathfinding algorithms that reason about value (see
     # greedy_pathfinding._next_fresh_candidate) use this to skip untouched
     # background cells rather than treating them as real targets.
-    DEFAULT_PROBABILITY: float = 1.0
+    DEFAULT_PROBABILITY: float = 0.1
 
     # Offsets (delta_row, delta_col) for the 8 directions stored in the last
     # dimension of WeightsGrid.weights: index 0 is "up", the rest follow
