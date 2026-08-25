@@ -1,7 +1,7 @@
 # metaheuristic_pathfinding.py
 
 from coordinates_grid.coordinates_grid import CoordinatesGrid
-from constants import Constants
+from helpers.constants import Constants
 from pathfinding_algorithms import greedy_pathfinding
 import numpy as np
 
@@ -358,23 +358,7 @@ def find_path_by_tabu_search(
     tabu_list = {}  # move -> rounds remaining before it's allowed again
 
     for _ in range(iterations):
-        neighbors = []  # (move, candidate_tour)
-
-        in_tour = set(current_tour)
-        for target in candidate_pool:
-            if target not in in_tour:
-                neighbors.append((("add", target), current_tour + [target]))
-
-        for target in current_tour:
-            neighbors.append((("drop", target), [cell for cell in current_tour if cell != target]))
-
-        if len(current_tour) >= 2:
-            sample_count = min(swap_samples_per_round, len(current_tour) * (len(current_tour) - 1) // 2)
-            for _ in range(sample_count):
-                first_index, second_index = rng.choice(len(current_tour), size=2, replace=False)
-                swapped_tour = list(current_tour)
-                swapped_tour[first_index], swapped_tour[second_index] = swapped_tour[second_index], swapped_tour[first_index]
-                neighbors.append((("swap", current_tour[first_index], current_tour[second_index]), swapped_tour))
+        neighbors = _generate_tour_neighbors(current_tour, candidate_pool, rng, swap_samples_per_round)
 
         best_neighbor_move = None
         best_neighbor_value = None
@@ -410,6 +394,40 @@ def find_path_by_tabu_search(
             best_path, best_total_value, best_cost_used = current_path, current_total_value, current_cost_used
 
     return best_path, best_total_value, best_cost_used
+
+
+def _generate_tour_neighbors(current_tour: list, candidate_pool: list, rng: np.random.Generator, swap_samples_per_round: int) -> list:
+    """
+    The neighborhood of a tour (an ordered list of target cells - see
+    find_path_by_tabu_search and find_path_by_variable_neighborhood_search)
+    under three move types: ADD an unvisited target to the end, DROP a
+    target already in the tour, or SWAP the order of two targets already in
+    it. SWAP moves are randomly sampled (capped at swap_samples_per_round)
+    rather than exhaustively enumerated, since the number of possible pairs
+    grows quadratically with tour length.
+
+    Returns a list of (move, candidate_tour) pairs, where move is ("add",
+    target), ("drop", target) or ("swap", target_a, target_b).
+    """
+    neighbors = []
+
+    in_tour = set(current_tour)
+    for target in candidate_pool:
+        if target not in in_tour:
+            neighbors.append((("add", target), current_tour + [target]))
+
+    for target in current_tour:
+        neighbors.append((("drop", target), [cell for cell in current_tour if cell != target]))
+
+    if len(current_tour) >= 2:
+        sample_count = min(swap_samples_per_round, len(current_tour) * (len(current_tour) - 1) // 2)
+        for _ in range(sample_count):
+            first_index, second_index = rng.choice(len(current_tour), size=2, replace=False)
+            swapped_tour = list(current_tour)
+            swapped_tour[first_index], swapped_tour[second_index] = swapped_tour[second_index], swapped_tour[first_index]
+            neighbors.append((("swap", current_tour[first_index], current_tour[second_index]), swapped_tour))
+
+    return neighbors
 
 
 def _reverse_move(move: tuple) -> tuple:
@@ -484,6 +502,610 @@ def _evaluate_tour(
     total_cost_used = (max_cost - remaining_budget) + return_cost
 
     return True, path, total_value, total_cost_used
+
+
+def find_path_by_variable_neighborhood_search(
+    grid: CoordinatesGrid,
+    start_row: int,
+    start_col: int,
+    max_cost: float,
+    require_return_to_base: bool = True,
+    blocked_mask: np.ndarray = None,
+    iterations: int = 40,
+    max_neighborhood: int = 4,
+    local_search_rounds: int = 15,
+    swap_samples_per_round: int = 20,
+    seed: int = None,
+) -> tuple[list[tuple[int, int]], float, float]:
+    """
+    Variable Neighborhood Search (VNS).
+
+    GENERAL IDEA
+    ------------
+    Picture standing on a hilly map made of "how good is this plan", trying
+    to find the highest hill. A plain hill-climber takes one tiny step at a
+    time toward whatever looks better right now - which works fine until it
+    is standing on top of A hill that is not the TALLEST hill around, with
+    no single small step that looks better. It is stuck there for good.
+
+    VNS's trick: when small steps stop helping, take a bigger, RANDOM jump
+    instead - far enough that it might land somewhere completely different,
+    maybe at the foot of a taller hill - then go back to small careful steps
+    from wherever it lands, to climb whatever is nearby. If that jump didn't
+    lead anywhere better after climbing, take an even BIGGER random jump
+    next time. The moment a jump does lead somewhere better, go back to
+    small jumps again, since it is probably close to a good hilltop now.
+
+    Each round:
+      1. SHAKE: from the current solution, make a random jump of size k (a
+         gentle jump if k is small, a disruptive one if k is large) -
+         landing on some solution that was not carefully chosen, just picked
+         at random from "k steps away".
+      2. LOCAL SEARCH: from that randomly-jumped-to solution, repeatedly take
+         the single best small tidying step available until none helps
+         anymore (a local hilltop).
+      3. COMPARE: if this hilltop beats the solution the round started from,
+         move there for good and reset k back to its smallest value - the
+         next round only takes small, careful jumps again. If it does not
+         beat the starting solution, stay put, but grow k - the next round's
+         jump will be bigger, since a small jump clearly was not enough to
+         shake things up.
+    Repeat for `iterations` rounds, then return the best solution seen at
+    any point - not necessarily wherever the search ends up standing.
+
+    The key difference from find_path_by_tabu_search: Tabu Search stays
+    disciplined, taking one careful step at a time and using a "no backsies"
+    memory to force itself past a dead end. VNS instead leans on
+    RANDOMNESS - a sometimes-small, sometimes-large random jump - to
+    physically relocate out of a dead end, then tidies up locally from
+    wherever it happens to land.
+
+    IN THIS CASE
+    ------------
+    The solution, and how it is evaluated, is exactly
+    find_path_by_tabu_search's: an ordered list of real search targets (see
+    _evaluate_tour), with the grid-level flight path worked out mechanically
+    between them via greedy_pathfinding._walk_toward_target, subject to the
+    same return-trip accounting (greedy_pathfinding._build_return_cost_grid).
+
+    NEIGHBORHOODS
+    -------------
+    _shake(tour, k) is the "jump of size k": drop k random targets from the
+    tour and add k random not-yet-included ones - the same ADD/DROP moves
+    find_path_by_tabu_search takes one at a time, just k of them applied at
+    once, and picked randomly rather than for their score. k = 1 is a small,
+    gentle reshuffle; k = max_neighborhood swaps out that many targets in
+    one go. A shake can land on a temporarily infeasible tour (too
+    expensive) - that is fine, since the local search step right after it
+    will usually repair it with a DROP move, the same way it would clean up
+    any other unproductive addition.
+
+    _local_search is a plain greedy hill-climb, not a miniature Tabu Search:
+    from the shaken tour it repeatedly takes whichever single ADD/DROP/SWAP
+    move (find_path_by_tabu_search's move set again - see
+    _generate_tour_neighbors, shared by both algorithms) most improves
+    total_value, stopping the moment no move helps (local_search_rounds caps
+    how many such steps it is allowed to take, as a safety net against a
+    pathologically long climb).
+
+    PERFORMANCE NOTE: like find_path_by_tabu_search, every neighbor
+    evaluation re-walks a candidate tour from scratch (see _evaluate_tour),
+    so cost scales with the number of real targets on the map. A single
+    shake-then-local-search round here does strictly more work than one
+    find_path_by_tabu_search round (the shake, plus a whole burst of hill-
+    climbing afterward), so `iterations` defaults lower to keep total
+    runtime in the same ballpark.
+    """
+    rows, cols = grid.rows, grid.cols
+    values = grid.coordinates_values
+    rng = np.random.default_rng(seed)
+    max_steps = 8 * (rows + cols)
+    return_cost_grid = greedy_pathfinding._build_return_cost_grid(grid, start_row, start_col, blocked_mask, max_steps) if require_return_to_base else None
+
+    candidate_rows, candidate_cols = np.nonzero(values > Constants.DEFAULT_PROBABILITY)
+    candidate_pool = [
+        (int(candidate_row), int(candidate_col))
+        for candidate_row, candidate_col in zip(candidate_rows, candidate_cols)
+        if (int(candidate_row), int(candidate_col)) != (start_row, start_col)
+        and (blocked_mask is None or not blocked_mask[candidate_row, candidate_col])
+    ]
+
+    current_tour = []
+    _, best_path, best_total_value, best_cost_used = _evaluate_tour(
+        grid, start_row, start_col, current_tour, max_cost, return_cost_grid, blocked_mask, max_steps,
+    )
+    current_total_value = best_total_value
+
+    neighborhood_size = 1
+
+    for _ in range(iterations):
+        shaken_tour = _shake(current_tour, candidate_pool, neighborhood_size, rng)
+
+        local_tour, local_feasible, local_path, local_total_value, local_cost_used = _local_search(
+            grid, start_row, start_col, shaken_tour, candidate_pool, max_cost, return_cost_grid,
+            blocked_mask, max_steps, swap_samples_per_round, rng, local_search_rounds,
+        )
+
+        if local_feasible and local_total_value > current_total_value:
+            current_tour, current_total_value = local_tour, local_total_value
+            neighborhood_size = 1  # this shake paid off - go back to gentle ones
+
+            if local_total_value > best_total_value:
+                best_path, best_total_value, best_cost_used = local_path, local_total_value, local_cost_used
+        else:
+            neighborhood_size += 1  # that shake didn't help - try a bigger one next time
+            if neighborhood_size > max_neighborhood:
+                neighborhood_size = 1
+
+    return best_path, best_total_value, best_cost_used
+
+
+def find_path_by_grasp(
+    grid: CoordinatesGrid,
+    start_row: int,
+    start_col: int,
+    max_cost: float,
+    require_return_to_base: bool = True,
+    blocked_mask: np.ndarray = None,
+    iterations: int = 25,
+    rcl_size: int = 5,
+    local_search_rounds: int = 15,
+    swap_samples_per_round: int = 20,
+    seed: int = None,
+) -> tuple[list[tuple[int, int]], float, float]:
+    """
+    Greedy Randomized Adaptive Search Procedure (GRASP).
+
+    GENERAL IDEA
+    ------------
+    Imagine building a LEGO tower as tall and sturdy as possible, one piece
+    at a time. A purely greedy builder always grabs the single best piece
+    available at every step - but that locks in the exact same choices every
+    time, and an early "best-looking" piece does not always lead to the best
+    finished tower. GRASP's fix: at each step, look at a handful of the best
+    pieces available - not just the single best one - and pick ONE OF THOSE
+    AT RANDOM. This still builds a genuinely good tower (every piece
+    considered was a strong one), but a different tower nearly every time,
+    since the random pick varies. Once a full tower is built this way, spend
+    a bit of effort fine-tuning it - swap a piece, add one, remove one,
+    whatever helps - until nothing helps anymore. THEN throw the plan away
+    and build an entirely new tower from scratch the same randomized-greedy
+    way, fine-tune that one too, and so on. After many such attempts, keep
+    whichever finished tower turned out best overall.
+
+    Each iteration is two phases:
+      1. CONSTRUCTION (greedy + randomized + adaptive): build a solution one
+         piece at a time. At every step, score every still-possible next
+         piece by how good it looks RIGHT NOW given what has been built so
+         far (the "adaptive" part - scores are recalculated fresh every
+         step, never fixed in advance), gather the best few into a short
+         "Restricted Candidate List" (RCL), and pick one of them at random -
+         not always the single best. Repeat until nothing more can be added.
+      2. LOCAL SEARCH: from that constructed solution, hill-climb (see
+         _local_search) to a local optimum - the same tidying-up step
+         find_path_by_variable_neighborhood_search uses right after a shake.
+      3. Keep this iteration's result if it is the best seen across every
+         iteration so far.
+    Repeat for `iterations` independent restarts, then return the best
+    solution found across all of them.
+
+    Where this differs from every other metaheuristic in this file: Ant
+    Colony Optimization and Tabu Search/VNS each maintain and evolve ONE
+    solution (or, for ACO, a shared pheromone-guided population) over time,
+    learning from its own history as they go. GRASP instead restarts from
+    scratch every iteration - there is no memory carried between
+    iterations - and relies purely on "many independent, randomized-but-
+    still-smart attempts, keep the best" to find a good answer. That makes
+    it embarrassingly parallel in principle (every iteration is fully
+    independent of every other) and immune to ever being trapped by a bad
+    early decision inherited from a previous iteration, at the cost of not
+    being able to build on partial progress the way the other algorithms do.
+
+    IN THIS CASE
+    ------------
+    Same solution representation as find_path_by_tabu_search and
+    find_path_by_variable_neighborhood_search: an ordered list of real
+    search targets (see _evaluate_tour), with the grid-level flight path
+    worked out via greedy_pathfinding._walk_toward_target and the same
+    return-trip accounting (greedy_pathfinding._build_return_cost_grid).
+
+    CONSTRUCTION
+    ------------
+    _construct_greedy_randomized_tour builds the tour by repeatedly walking
+    from wherever it currently ends toward one more target - exactly what
+    find_path_by_value_cost_ratio's tournament does (see
+    greedy_pathfinding._evaluate_candidate for the walk-and-score-by-
+    value/cost-ratio logic) - but instead of always taking the single
+    best-ratio candidate, it ranks every reachable remaining target by that
+    ratio, keeps the top rcl_size of them (the Restricted Candidate List),
+    and picks one uniformly at random. Since which targets are still
+    reachable, and what their ratios are, depends on where the tour
+    currently stands - not fixed at the start - re-evaluating this at every
+    step is the "adaptive" half of GRASP. Construction stops the moment no
+    remaining target is reachable within budget.
+
+    LOCAL SEARCH
+    ------------
+    Reuses find_path_by_variable_neighborhood_search's _local_search
+    unchanged: the same ADD/DROP/SWAP hill-climb (see
+    _generate_tour_neighbors), run until no move improves the constructed
+    tour or local_search_rounds is reached.
+
+    PERFORMANCE NOTE: construction alone costs roughly O(P^2 * average leg
+    length) in the worst case, since each of up to P rounds re-scores every
+    still-unused candidate (P = size of the real-target candidate pool) -
+    and local search adds its own per-iteration cost on top of that, on the
+    same order as find_path_by_tabu_search's. With `iterations` independent
+    restarts, this is the most compute-hungry algorithm in this file for a
+    large candidate pool; lower `iterations` or rcl_size for a big scenario
+    if runtime matters more than the last bit of quality.
+    """
+    rows, cols = grid.rows, grid.cols
+    values = grid.coordinates_values
+    rng = np.random.default_rng(seed)
+    max_steps = 8 * (rows + cols)
+    return_cost_grid = greedy_pathfinding._build_return_cost_grid(grid, start_row, start_col, blocked_mask, max_steps) if require_return_to_base else None
+
+    candidate_rows, candidate_cols = np.nonzero(values > Constants.DEFAULT_PROBABILITY)
+    candidate_pool = [
+        (int(candidate_row), int(candidate_col))
+        for candidate_row, candidate_col in zip(candidate_rows, candidate_cols)
+        if (int(candidate_row), int(candidate_col)) != (start_row, start_col)
+        and (blocked_mask is None or not blocked_mask[candidate_row, candidate_col])
+    ]
+
+    best_path = [(start_row, start_col)]
+    best_total_value = values[start_row, start_col]
+    best_cost_used = 0.0
+
+    for _ in range(iterations):
+        constructed_tour = _construct_greedy_randomized_tour(
+            grid, start_row, start_col, max_cost, return_cost_grid, blocked_mask, max_steps, candidate_pool, rcl_size, rng,
+        )
+
+        _, feasible, local_path, local_total_value, local_cost_used = _local_search(
+            grid, start_row, start_col, constructed_tour, candidate_pool, max_cost, return_cost_grid,
+            blocked_mask, max_steps, swap_samples_per_round, rng, local_search_rounds,
+        )
+
+        if feasible and local_total_value > best_total_value:
+            best_path, best_total_value, best_cost_used = local_path, local_total_value, local_cost_used
+
+    return best_path, best_total_value, best_cost_used
+
+
+def _construct_greedy_randomized_tour(
+    grid: CoordinatesGrid,
+    start_row: int,
+    start_col: int,
+    max_cost: float,
+    return_cost_grid: np.ndarray,
+    blocked_mask: np.ndarray,
+    max_steps: int,
+    candidate_pool: list,
+    rcl_size: int,
+    rng: np.random.Generator,
+) -> list:
+    """
+    See CONSTRUCTION in find_path_by_grasp's docstring. Starting at
+    (start_row, start_col), repeatedly walks toward one more target using
+    greedy_pathfinding._evaluate_candidate (the same walk-and-score-by-
+    value/cost-ratio helper find_path_by_value_cost_ratio's tournament
+    uses), but each round narrows every still-reachable remaining candidate
+    down to the top rcl_size by ratio (the Restricted Candidate List) and
+    picks one of them uniformly at random, rather than always taking the
+    single best. Stops the moment no remaining candidate is reachable within
+    budget.
+
+    Returns just the tour (the ordered list of chosen target cells) - not a
+    full path/value/cost - so it can be fed into _local_search the same way
+    _shake's output is.
+    """
+    rows, cols = grid.rows, grid.cols
+
+    visited = np.zeros((rows, cols), dtype=bool)
+    visited[start_row, start_col] = True
+    remaining_budget = max_cost
+    row, col = start_row, start_col
+    remaining_candidates = set(candidate_pool)
+    tour = []
+
+    while remaining_candidates:
+        evaluated = []
+        for candidate in remaining_candidates:
+            result = greedy_pathfinding._evaluate_candidate(
+                grid, candidate, row, col, remaining_budget, return_cost_grid, blocked_mask, visited, max_steps,
+            )
+            if result is not None:
+                evaluated.append((candidate, result))
+
+        if not evaluated:
+            break  # nothing left is reachable within the remaining budget
+
+        evaluated.sort(key=lambda entry: entry[1]["ratio"], reverse=True)
+        restricted_candidate_list = evaluated[:rcl_size]
+        chosen_candidate, chosen_result = restricted_candidate_list[rng.integers(len(restricted_candidate_list))]
+
+        for cell in chosen_result["path_cells"]:
+            visited[cell] = True
+        remaining_budget -= chosen_result["cost"]
+        row, col = chosen_candidate
+        tour.append(chosen_candidate)
+        remaining_candidates.discard(chosen_candidate)
+
+    return tour
+
+
+def find_path_by_simulated_annealing(
+    grid: CoordinatesGrid,
+    start_row: int,
+    start_col: int,
+    max_cost: float,
+    require_return_to_base: bool = True,
+    blocked_mask: np.ndarray = None,
+    iterations: int = 3000,
+    initial_temperature: float = 20.0,
+    cooling_rate: float = 0.995,
+    min_temperature: float = 1e-3,
+    seed: int = None,
+) -> tuple[list[tuple[int, int]], float, float]:
+    """
+    Simulated Annealing (SA).
+
+    GENERAL IDEA
+    ------------
+    Picture a bouncy ball dropped onto a bumpy landscape of hills and
+    valleys, trying to settle on the tallest hill (higher is better here).
+    A ball that only ever moves to something better gets stuck on the very
+    first small hill it climbs - even if a far taller hill is sitting just
+    past a dip in between, since reaching it would first require going the
+    "wrong" way, downhill, and a strictly-better-only mover never allows
+    that.
+
+    Simulated Annealing fixes this by making the ball extra bouncy at the
+    start - as if the whole landscape is being shaken hard - so it can hop
+    over small hills and out of shallow dips, wandering fairly freely (even
+    sometimes ending up somewhere clearly worse than where it started).
+    Then, very gradually, the shaking is turned down ("cooling"), so the
+    ball's bounces get smaller and smaller, until near the end it barely
+    bounces at all and just settles wherever it happens to be - hopefully a
+    tall hill it stumbled onto while it still had plenty of bounce left to
+    explore broadly.
+
+    The name comes from annealing metal: heat it up (its atoms jiggle
+    around energetically, shaking loose from a poor, defect-ridden
+    arrangement), then cool it down SLOWLY so the atoms have time to settle
+    into a low-energy, orderly crystal structure. Cool it too fast (quench
+    it) and the atoms freeze into a poor structure - the metal equivalent of
+    getting permanently stuck on a mediocre hill.
+
+    Each iteration:
+      1. Propose ONE random small change to the current solution (a
+         "neighbor").
+      2. If it is better, always accept it.
+      3. If it is worse, accept it ANYWAY with a probability that depends on
+         both how much worse it is and the current "temperature" - a small
+         worsening is often still accepted, a big one rarely is, and either
+         is far more likely to be accepted early (high temperature) than
+         late (low temperature). This is the Metropolis criterion:
+         probability = exp(how much worse / temperature).
+      4. Remember this as the best solution ever seen if it beats everything
+         found so far - the current solution can wander to something worse
+         at any moment, so what actually gets returned at the end is
+         tracked separately, exactly like every other algorithm in this
+         file.
+      5. Cool down a little: temperature = temperature * cooling_rate
+         (never letting it drop below min_temperature).
+    Repeat for `iterations` rounds - typically far more than find_path_by_
+    tabu_search or find_path_by_variable_neighborhood_search use, since each
+    round here is much cheaper, see IN THIS CASE - then return the best
+    solution ever seen.
+
+    IN THIS CASE
+    ------------
+    Same solution representation as every other search-based metaheuristic
+    in this file: an ordered list of real search targets (see
+    _evaluate_tour), with the grid-level flight path worked out via
+    greedy_pathfinding._walk_toward_target and the same return-trip
+    accounting (greedy_pathfinding._build_return_cost_grid).
+
+    Where this differs from find_path_by_tabu_search, find_path_by_
+    variable_neighborhood_search and find_path_by_grasp: those all generate
+    a whole batch of candidate neighbors every round and deliberately pick
+    among them (the best one, or the best after a random shake). Simulated
+    Annealing instead proposes exactly ONE random neighbor per round (see
+    _random_neighbor - a single random ADD, DROP or SWAP, the same three
+    move types used everywhere else in this file) and simply decides
+    accept-or-reject on that one proposal. That is a much cheaper single
+    round, which is exactly why it is normally run for many more rounds than
+    the others.
+
+    TEMPERATURE SCHEDULE
+    ---------------------
+    initial_temperature sets how freely the search wanders early on;
+    cooling_rate (multiplied into the temperature every round) controls how
+    quickly that freedom fades - a cooling_rate close to 1 cools slowly
+    (more exploration, needs more iterations to fully cool), a smaller one
+    cools fast (less exploration, converges sooner but risks settling
+    early). Temperature never drops below min_temperature, both to avoid
+    dividing by zero and because a temperature of exactly zero would make
+    the search purely greedy for every remaining iteration - fine in
+    principle, but a small floor keeps a sliver of randomness alive
+    throughout.
+
+    PERFORMANCE NOTE: every iteration still calls _evaluate_tour, which
+    re-walks the whole tour from scratch (see find_path_by_tabu_search's
+    PERFORMANCE NOTE) - so this is not free per iteration, just far cheaper
+    per iteration than generating and scoring a whole neighborhood.
+    `iterations` defaults much higher than the other tour-based
+    metaheuristics in this file to compensate.
+    """
+    rows, cols = grid.rows, grid.cols
+    values = grid.coordinates_values
+    rng = np.random.default_rng(seed)
+    max_steps = 8 * (rows + cols)
+    return_cost_grid = greedy_pathfinding._build_return_cost_grid(grid, start_row, start_col, blocked_mask, max_steps) if require_return_to_base else None
+
+    candidate_rows, candidate_cols = np.nonzero(values > Constants.DEFAULT_PROBABILITY)
+    candidate_pool = [
+        (int(candidate_row), int(candidate_col))
+        for candidate_row, candidate_col in zip(candidate_rows, candidate_cols)
+        if (int(candidate_row), int(candidate_col)) != (start_row, start_col)
+        and (blocked_mask is None or not blocked_mask[candidate_row, candidate_col])
+    ]
+
+    current_tour = []
+    _, best_path, best_total_value, best_cost_used = _evaluate_tour(
+        grid, start_row, start_col, current_tour, max_cost, return_cost_grid, blocked_mask, max_steps,
+    )
+    current_total_value = best_total_value
+
+    temperature = initial_temperature
+
+    for _ in range(iterations):
+        candidate_tour = _random_neighbor(current_tour, candidate_pool, rng)
+        feasible, path, total_value, cost_used = _evaluate_tour(
+            grid, start_row, start_col, candidate_tour, max_cost, return_cost_grid, blocked_mask, max_steps,
+        )
+
+        if feasible:
+            delta = total_value - current_total_value
+            # A strictly better proposal is always taken; a worse one is
+            # still taken with probability exp(delta / temperature) - delta
+            # is <= 0 here, so this is in (0, 1], shrinking as temperature
+            # cools or the proposal gets worse.
+            if delta > 0 or rng.random() < np.exp(delta / temperature):
+                current_tour, current_total_value = candidate_tour, total_value
+
+                if total_value > best_total_value:
+                    best_path, best_total_value, best_cost_used = path, total_value, cost_used
+
+        temperature = max(temperature * cooling_rate, min_temperature)
+
+    return best_path, best_total_value, best_cost_used
+
+
+def _random_neighbor(current_tour: list, candidate_pool: list, rng: np.random.Generator) -> list:
+    """
+    Picks ONE random move - ADD an unvisited target, DROP a target already
+    in the tour, or SWAP two targets' order (the same three move types
+    _generate_tour_neighbors builds a whole batch of) - and returns the
+    resulting tour. find_path_by_simulated_annealing only ever needs a
+    single random proposal per iteration, so this picks one move directly
+    rather than generating and discarding every other possible neighbor.
+    """
+    in_tour = set(current_tour)
+    not_in_tour = [cell for cell in candidate_pool if cell not in in_tour]
+
+    available_move_kinds = []
+    if not_in_tour:
+        available_move_kinds.append("add")
+    if current_tour:
+        available_move_kinds.append("drop")
+    if len(current_tour) >= 2:
+        available_move_kinds.append("swap")
+
+    if not available_move_kinds:
+        return list(current_tour)  # nothing possible to change
+
+    move_kind = available_move_kinds[rng.integers(len(available_move_kinds))]
+
+    if move_kind == "add":
+        target = not_in_tour[rng.integers(len(not_in_tour))]
+        return current_tour + [target]
+
+    if move_kind == "drop":
+        drop_index = rng.integers(len(current_tour))
+        return [cell for index, cell in enumerate(current_tour) if index != drop_index]
+
+    # "swap"
+    first_index, second_index = rng.choice(len(current_tour), size=2, replace=False)
+    swapped_tour = list(current_tour)
+    swapped_tour[first_index], swapped_tour[second_index] = swapped_tour[second_index], swapped_tour[first_index]
+    return swapped_tour
+
+
+def _shake(tour: list, candidate_pool: list, neighborhood_size: int, rng: np.random.Generator) -> list:
+    """
+    See NEIGHBORHOODS in find_path_by_variable_neighborhood_search's
+    docstring: randomly perturbs `tour` by dropping up to neighborhood_size
+    of its targets and adding the same number of random not-yet-included
+    targets from candidate_pool. Larger neighborhood_size means a bigger,
+    more disruptive random jump.
+    """
+    tour = list(tour)
+
+    remove_count = min(neighborhood_size, len(tour))
+    if remove_count > 0:
+        remove_indices = set(rng.choice(len(tour), size=remove_count, replace=False).tolist())
+        tour = [cell for index, cell in enumerate(tour) if index not in remove_indices]
+
+    in_tour = set(tour)
+    not_in_tour = [cell for cell in candidate_pool if cell not in in_tour]
+    add_count = min(neighborhood_size, len(not_in_tour))
+    if add_count > 0:
+        add_indices = rng.choice(len(not_in_tour), size=add_count, replace=False)
+        tour = tour + [not_in_tour[index] for index in add_indices]
+
+    return tour
+
+
+def _local_search(
+    grid: CoordinatesGrid,
+    start_row: int,
+    start_col: int,
+    tour: list,
+    candidate_pool: list,
+    max_cost: float,
+    return_cost_grid: np.ndarray,
+    blocked_mask: np.ndarray,
+    max_steps: int,
+    swap_samples_per_round: int,
+    rng: np.random.Generator,
+    max_rounds: int,
+):
+    """
+    Greedy hill-climb from `tour`: repeatedly applies whichever single
+    ADD/DROP/SWAP move (see _generate_tour_neighbors) most improves
+    total_value, stopping as soon as no move improves it (a local optimum)
+    or after max_rounds. Used by find_path_by_variable_neighborhood_search
+    to tidy up a solution right after _shake has randomly perturbed it.
+
+    A tour that starts infeasible (_shake can produce one, e.g. by adding an
+    expensive target) is treated as having value -inf, so any feasible
+    neighbor - most commonly a DROP - counts as an improvement; if no
+    feasible neighbor is ever found, this returns feasible=False.
+
+    Returns (tour, feasible, path, total_value, cost_used).
+    """
+    current_tour = tour
+    feasible, path, total_value, cost_used = _evaluate_tour(
+        grid, start_row, start_col, current_tour, max_cost, return_cost_grid, blocked_mask, max_steps,
+    )
+    current_value = total_value if feasible else -np.inf
+
+    for _ in range(max_rounds):
+        neighbors = _generate_tour_neighbors(current_tour, candidate_pool, rng, swap_samples_per_round)
+
+        best_result = None
+        best_value = current_value
+
+        for _, candidate_tour in neighbors:
+            candidate_feasible, candidate_path, candidate_value, candidate_cost = _evaluate_tour(
+                grid, start_row, start_col, candidate_tour, max_cost, return_cost_grid, blocked_mask, max_steps,
+            )
+            if candidate_feasible and candidate_value > best_value:
+                best_value = candidate_value
+                best_result = (candidate_tour, candidate_path, candidate_value, candidate_cost)
+
+        if best_result is None:
+            break  # local optimum - no move improves on the current tour
+
+        current_tour, path, total_value, cost_used = best_result
+        current_value = total_value
+        feasible = True
+
+    return current_tour, feasible, path, total_value, cost_used
 
 
 def _build_attraction_field(values: np.ndarray, attraction_range: float) -> np.ndarray:
@@ -763,6 +1385,304 @@ def _construct_ant_path(
     total_cost_used = (max_cost - remaining_budget) + return_cost
 
     return path_with_return, total_value, total_cost_used, edges_used
+
+
+def find_path_by_genetic_algorithm(
+    grid: CoordinatesGrid,
+    start_row: int,
+    start_col: int,
+    max_cost: float,
+    require_return_to_base: bool = True,
+    blocked_mask: np.ndarray = None,
+    population_size: int = 30,
+    generations: int = 60,
+    tournament_size: int = 3,
+    crossover_rate: float = 0.8,
+    mutation_rate: float = 0.3,
+    elite_count: int = 2,
+    seed_fraction: float = 0.2,
+    seed: int = None,
+) -> tuple[list[tuple[int, int]], float, float]:
+    """
+    Genetic Algorithm (GA) - introduced by John Holland ("Adaptation in
+    Natural and Artificial Systems", 1975) and popularized by David
+    Goldberg's 1989 book "Genetic Algorithms in Search, Optimization, and
+    Machine Learning".
+
+    GENERAL IDEA
+    ------------
+    Imagine breeding pea plants for the tallest, most productive garden. You
+    would not just pick the single best plant you have and stop - you would
+    let your best plants cross-pollinate with each other, combining their
+    traits, let a few random mutations happen naturally, and grow a whole
+    new generation from that. Repeat for many generations, and the garden as
+    a whole tends to keep improving, because good traits from two DIFFERENT
+    parents can combine into an offspring better than either parent alone -
+    something no single plant, however good, could ever do by itself.
+
+    A Genetic Algorithm does exactly this with candidate solutions instead
+    of plants:
+      1. Start with a whole population of candidate solutions - mostly
+         randomly built, some given a head start from a quick greedy guess.
+      2. Score every one of them ("how good is this?") - its "fitness".
+      3. The better-scoring ones are more likely to become "parents" for
+         the next generation - here via tournament selection: grab a few
+         candidates at random, let the fittest of that small group win a
+         chance to be a parent (the same style of "compare a handful, take
+         the best" tournament greedy_pathfinding.find_path_by_value_cost_
+         ratio already uses, just applied to picking parents instead of
+         picking targets).
+      4. Two parents "have a child" (crossover): the child borrows part of
+         one parent's plan and fills in the rest from the other's,
+         hopefully combining the best of both.
+      5. Every so often, a child gets a small random mutation - a tweak
+         that has nothing to do with either parent - keeping some fresh
+         randomness alive so the population does not converge into a sea
+         of near-identical copies.
+      6. The single best solution ever found is always kept safe
+         ("elitism"), so a bad generation can never accidentally lose it.
+      7. Repeat for `generations` rounds, then return the best solution
+         ever seen - the same "track the best across the whole run"
+         convention every algorithm in this file follows.
+
+    IN THIS CASE
+    ------------
+    A "chromosome" is exactly the same solution representation find_path_
+    by_tabu_search, find_path_by_variable_neighborhood_search, find_path_
+    by_grasp and find_path_by_simulated_annealing already use: an ordered
+    list of real search targets (cells with value above Constants.
+    DEFAULT_PROBABILITY). The grid-level flight path is worked out
+    mechanically from that list via greedy_pathfinding._walk_toward_target,
+    with the same return-trip accounting (greedy_pathfinding._build_
+    return_cost_grid) - see REPAIR RATHER THAN REJECT for the one place
+    this differs from those other algorithms' _evaluate_tour.
+
+    - Initial population: seed_fraction of it is built with _construct_
+      greedy_randomized_tour (the same randomized-greedy construction
+      find_path_by_grasp uses); the rest is uniformly random subsets of the
+      candidate pool in random order (see _random_chromosome) - a mix of
+      "informed" and "blind" starting material, rather than only one or
+      the other.
+    - Fitness: total_value from _evaluate_chromosome_with_repair.
+    - Selection: tournament selection (_tournament_select), tournament_size
+      candidates compared per pick.
+    - Crossover: _crossover - order-preserving, adapted for variable-length
+      subsets rather than full permutations (see its own docstring).
+    - Mutation: reuses _random_neighbor UNCHANGED - the exact same single
+      random ADD/DROP/SWAP move find_path_by_simulated_annealing proposes
+      every iteration. Every metaheuristic in this file that operates on
+      this tour representation - Tabu Search, VNS, GRASP, Simulated
+      Annealing, and now this - ultimately explores the same three moves;
+      what differs between them is only the STRATEGY for choosing among
+      those moves (memory-guided local search, shake-then-climb,
+      randomized-greedy-then-climb, single-proposal random walk, and here,
+      population + selection + crossover).
+    - Elitism: the elite_count best chromosomes (already fitness-sorted)
+      survive into the next generation unchanged, guaranteeing the
+      population's best individual never gets worse from one generation to
+      the next - though the single best-EVER solution is still tracked
+      separately and returned, exactly like every other algorithm here,
+      since even an elite generation is regenerated with fresh crossover/
+      mutation for everyone else.
+
+    REPAIR RATHER THAN REJECT
+    ---------------------------
+    Every other tour-based algorithm in this file uses _evaluate_tour,
+    which fails a tour OUTRIGHT (feasible=False) the moment any single leg
+    does not fit the budget. That is a fine rule when there is only one
+    candidate tour to judge at a time (as in a single local-search move),
+    but a GA's crossover and mutation routinely produce chromosomes with
+    more targets than the budget could ever afford, and simply discarding
+    every such individual would waste most of the population on every
+    single generation. _evaluate_chromosome_with_repair instead walks a
+    chromosome one target at a time and just STOPS at the first target that
+    would not fit, keeping everything up to that point - "repairing" an
+    over-ambitious chromosome into the best feasible prefix of itself,
+    rather than throwing the whole thing away for being too greedy. This
+    repaired, shorter chromosome (not the original) is what is used for
+    crossover and mutation henceforth once a generation is scored, so the
+    population's genetic material stays realistic.
+
+    PERFORMANCE NOTE: like find_path_by_grasp, every individual's fitness
+    evaluation walks its whole chromosome from scratch, and this runs that
+    evaluation for every individual, every generation - population_size *
+    generations evaluations in total, the same order of cost as GRASP's
+    iterations * (candidate pool size) construction work. Expect a runtime
+    in the same ballpark as find_path_by_grasp or find_path_by_variable_
+    neighborhood_search for a similarly sized candidate pool.
+    """
+    rows, cols = grid.rows, grid.cols
+    values = grid.coordinates_values
+    rng = np.random.default_rng(seed)
+    max_steps = 8 * (rows + cols)
+    return_cost_grid = greedy_pathfinding._build_return_cost_grid(grid, start_row, start_col, blocked_mask, max_steps) if require_return_to_base else None
+
+    candidate_rows, candidate_cols = np.nonzero(values > Constants.DEFAULT_PROBABILITY)
+    candidate_pool = [
+        (int(candidate_row), int(candidate_col))
+        for candidate_row, candidate_col in zip(candidate_rows, candidate_cols)
+        if (int(candidate_row), int(candidate_col)) != (start_row, start_col)
+        and (blocked_mask is None or not blocked_mask[candidate_row, candidate_col])
+    ]
+
+    best_path = [(start_row, start_col)]
+    best_total_value = values[start_row, start_col]
+    best_cost_used = 0.0
+
+    if not candidate_pool:
+        return best_path, best_total_value, best_cost_used
+
+    seeded_count = max(1, round(population_size * seed_fraction))
+    population = [
+        _construct_greedy_randomized_tour(grid, start_row, start_col, max_cost, return_cost_grid, blocked_mask, max_steps, candidate_pool, rcl_size=5, rng=rng)
+        for _ in range(min(seeded_count, population_size))
+    ]
+    while len(population) < population_size:
+        population.append(_random_chromosome(candidate_pool, rng))
+
+    for _ in range(generations):
+        evaluated = []
+        for chromosome in population:
+            path, total_value, cost_used, repaired_chromosome = _evaluate_chromosome_with_repair(
+                grid, start_row, start_col, chromosome, max_cost, return_cost_grid, blocked_mask, max_steps,
+            )
+            evaluated.append((repaired_chromosome, total_value, path, cost_used))
+
+            if total_value > best_total_value:
+                best_path, best_total_value, best_cost_used = path, total_value, cost_used
+
+        evaluated.sort(key=lambda entry: entry[1], reverse=True)
+        repaired_population = [entry[0] for entry in evaluated]
+        fitnesses = [entry[1] for entry in evaluated]
+
+        next_population = list(repaired_population[:elite_count])
+
+        while len(next_population) < population_size:
+            parent_a = _tournament_select(repaired_population, fitnesses, tournament_size, rng)
+            parent_b = _tournament_select(repaired_population, fitnesses, tournament_size, rng)
+
+            child = _crossover(parent_a, parent_b, rng) if rng.random() < crossover_rate else list(parent_a)
+            if rng.random() < mutation_rate:
+                child = _random_neighbor(child, candidate_pool, rng)
+
+            next_population.append(child)
+
+        population = next_population
+
+    return best_path, best_total_value, best_cost_used
+
+
+def _random_chromosome(candidate_pool: list, rng: np.random.Generator) -> list:
+    """
+    A uniformly random chromosome for find_path_by_genetic_algorithm's
+    initial population: a random-size subset of candidate_pool (from 1
+    target up to every target), in random order. This is the "blind"
+    counterpart to _construct_greedy_randomized_tour's informed seeding -
+    together they give the starting population a mix of head-started and
+    genuinely unbiased material.
+    """
+    subset_size = rng.integers(1, len(candidate_pool) + 1)
+    chosen_indices = rng.choice(len(candidate_pool), size=subset_size, replace=False)
+    chromosome = [candidate_pool[index] for index in chosen_indices]
+    rng.shuffle(chromosome)
+    return chromosome
+
+
+def _tournament_select(population: list, fitnesses: list, tournament_size: int, rng: np.random.Generator) -> list:
+    """
+    Tournament selection: samples tournament_size individuals at random
+    (with replacement) from `population` and returns whichever of them has
+    the highest fitness - the same "compare a handful, take the best"
+    pattern used throughout this project's tournament-style algorithms,
+    applied here to picking a parent rather than picking a target.
+    """
+    candidate_indices = rng.integers(0, len(population), size=tournament_size)
+    best_index = max(candidate_indices, key=lambda index: fitnesses[index])
+    return population[best_index]
+
+
+def _crossover(parent_a: list, parent_b: list, rng: np.random.Generator) -> list:
+    """
+    Order-preserving crossover, adapted for find_path_by_genetic_
+    algorithm's variable-length subset chromosomes rather than the
+    fixed-length full permutations classic TSP-style crossover assumes:
+    keeps a random-length prefix of parent_a as-is, then appends whichever
+    of parent_b's targets are not already in that prefix, in parent_b's own
+    order. The child is always duplicate-free and never longer than
+    len(parent_a) + len(parent_b).
+    """
+    if not parent_a:
+        return list(parent_b)
+    if not parent_b:
+        return list(parent_a)
+
+    prefix_length = rng.integers(1, len(parent_a) + 1)
+    prefix = list(parent_a[:prefix_length])
+    prefix_set = set(prefix)
+
+    return prefix + [target for target in parent_b if target not in prefix_set]
+
+
+def _evaluate_chromosome_with_repair(
+    grid: CoordinatesGrid,
+    start_row: int,
+    start_col: int,
+    chromosome: list,
+    max_cost: float,
+    return_cost_grid: np.ndarray,
+    blocked_mask: np.ndarray,
+    max_steps: int,
+):
+    """
+    See REPAIR RATHER THAN REJECT in find_path_by_genetic_algorithm's
+    docstring. Walks chromosome (an ordered list of target cells) one
+    target at a time via greedy_pathfinding._walk_toward_target, exactly
+    like _evaluate_tour, but instead of failing the whole chromosome the
+    moment one leg does not fit the budget, simply stops there and keeps
+    whatever prefix of targets was actually reachable.
+
+    Returns (path, total_value, cost_used, repaired_chromosome) - always
+    feasible (cost_used <= max_cost) - where repaired_chromosome is the
+    prefix of chromosome that was actually kept, for the caller to use as
+    this individual's real genetic material going forward.
+    """
+    rows, cols = grid.rows, grid.cols
+    values = grid.coordinates_values
+
+    visited = np.zeros((rows, cols), dtype=bool)
+    visited[start_row, start_col] = True
+    path = [(start_row, start_col)]
+    total_value = values[start_row, start_col]
+    remaining_budget = max_cost
+    row, col = start_row, start_col
+    repaired_chromosome = []
+
+    for target_row, target_col in chromosome:
+        reached, path_cells, cost, value_gained = greedy_pathfinding._walk_toward_target(
+            grid, row, col, target_row, target_col, remaining_budget, return_cost_grid, blocked_mask, visited, max_steps,
+        )
+        if not reached:
+            break  # this target - and, since positions only move forward, everything after it - doesn't fit
+
+        for cell in path_cells:
+            visited[cell] = True
+            path.append(cell)
+        total_value += value_gained
+        remaining_budget -= cost
+        row, col = target_row, target_col
+        repaired_chromosome.append((target_row, target_col))
+
+    if return_cost_grid is None:
+        return path, total_value, max_cost - remaining_budget, repaired_chromosome
+
+    _, return_path_cells, return_cost, return_value_gained = greedy_pathfinding._walk_toward_target(
+        grid, row, col, start_row, start_col, remaining_budget, None, blocked_mask, visited, max_steps,
+    )
+    path_with_return = path + return_path_cells
+    total_value += return_value_gained
+    total_cost_used = (max_cost - remaining_budget) + return_cost
+
+    return path_with_return, total_value, total_cost_used, repaired_chromosome
 
 
 if __name__ == "__main__":

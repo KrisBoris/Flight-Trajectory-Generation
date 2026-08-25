@@ -1,6 +1,6 @@
 # weights_grid.py
 
-from constants import Constants
+from helpers.constants import Constants
 from dataclasses import dataclass, field
 import numpy as np
 

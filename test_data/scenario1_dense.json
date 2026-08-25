@@ -1,0 +1,451 @@
+{
+    "terrain": {
+        "rows": 100,
+        "cols": 100,
+        "altitude_range": [
+            0.0,
+            20.0
+        ],
+        "cell_size_meters": 5.0,
+        "max_gradient": 0.001
+    },
+    "start_location": {
+        "row": 0,
+        "col": 0
+    },
+    "searched_person_locations": [
+        {
+            "row": 3,
+            "col": 5,
+            "probability": 9.5
+        },
+        {
+            "row": 4,
+            "col": 15,
+            "probability": 8.0
+        },
+        {
+            "row": 6,
+            "col": 27,
+            "probability": 7.0
+        },
+        {
+            "row": 7,
+            "col": 38,
+            "probability": 4.0
+        },
+        {
+            "row": 8,
+            "col": 42,
+            "probability": 6.0
+        },
+        {
+            "row": 9,
+            "col": 53,
+            "probability": 3.0
+        },
+        {
+            "row": 11,
+            "col": 67,
+            "probability": 5.5
+        },
+        {
+            "row": 12,
+            "col": 78,
+            "probability": 2.0
+        },
+        {
+            "row": 13,
+            "col": 83,
+            "probability": 6.5
+        },
+        {
+            "row": 15,
+            "col": 94,
+            "probability": 4.5
+        },
+        {
+            "row": 16,
+            "col": 98,
+            "probability": 7.5
+        },
+        {
+            "row": 17,
+            "col": 84,
+            "probability": 3.5
+        },
+        {
+            "row": 18,
+            "col": 73,
+            "probability": 5.0
+        },
+        {
+            "row": 20,
+            "col": 67,
+            "probability": 1.5
+        },
+        {
+            "row": 21,
+            "col": 53,
+            "probability": 6.0
+        },
+        {
+            "row": 22,
+            "col": 44,
+            "probability": 9.5
+        },
+        {
+            "row": 24,
+            "col": 36,
+            "probability": 8.0
+        },
+        {
+            "row": 25,
+            "col": 25,
+            "probability": 7.0
+        },
+        {
+            "row": 26,
+            "col": 12,
+            "probability": 4.0
+        },
+        {
+            "row": 27,
+            "col": 2,
+            "probability": 6.0
+        },
+        {
+            "row": 29,
+            "col": 8,
+            "probability": 3.0
+        },
+        {
+            "row": 30,
+            "col": 17,
+            "probability": 5.5
+        },
+        {
+            "row": 31,
+            "col": 27,
+            "probability": 2.0
+        },
+        {
+            "row": 33,
+            "col": 35,
+            "probability": 6.5
+        },
+        {
+            "row": 34,
+            "col": 47,
+            "probability": 4.5
+        },
+        {
+            "row": 35,
+            "col": 54,
+            "probability": 7.5
+        },
+        {
+            "row": 36,
+            "col": 65,
+            "probability": 3.5
+        },
+        {
+            "row": 38,
+            "col": 77,
+            "probability": 5.0
+        },
+        {
+            "row": 39,
+            "col": 82,
+            "probability": 1.5
+        },
+        {
+            "row": 40,
+            "col": 94,
+            "probability": 6.0
+        },
+        {
+            "row": 42,
+            "col": 92,
+            "probability": 9.5
+        },
+        {
+            "row": 43,
+            "col": 85,
+            "probability": 8.0
+        },
+        {
+            "row": 44,
+            "col": 78,
+            "probability": 7.0
+        },
+        {
+            "row": 45,
+            "col": 62,
+            "probability": 4.0
+        },
+        {
+            "row": 47,
+            "col": 54,
+            "probability": 6.0
+        },
+        {
+            "row": 48,
+            "col": 44,
+            "probability": 3.0
+        },
+        {
+            "row": 49,
+            "col": 38,
+            "probability": 5.5
+        },
+        {
+            "row": 50,
+            "col": 23,
+            "probability": 2.0
+        },
+        {
+            "row": 52,
+            "col": 15,
+            "probability": 6.5
+        },
+        {
+            "row": 53,
+            "col": 3,
+            "probability": 4.5
+        },
+        {
+            "row": 54,
+            "col": 2,
+            "probability": 7.5
+        },
+        {
+            "row": 56,
+            "col": 17,
+            "probability": 3.5
+        },
+        {
+            "row": 57,
+            "col": 22,
+            "probability": 5.0
+        },
+        {
+            "row": 58,
+            "col": 33,
+            "probability": 1.5
+        },
+        {
+            "row": 59,
+            "col": 45,
+            "probability": 6.0
+        },
+        {
+            "row": 61,
+            "col": 55,
+            "probability": 9.5
+        },
+        {
+            "row": 62,
+            "col": 62,
+            "probability": 8.0
+        },
+        {
+            "row": 63,
+            "col": 78,
+            "probability": 7.0
+        },
+        {
+            "row": 65,
+            "col": 87,
+            "probability": 4.0
+        },
+        {
+            "row": 66,
+            "col": 98,
+            "probability": 6.0
+        },
+        {
+            "row": 67,
+            "col": 92,
+            "probability": 3.0
+        },
+        {
+            "row": 68,
+            "col": 87,
+            "probability": 5.5
+        },
+        {
+            "row": 70,
+            "col": 74,
+            "probability": 2.0
+        },
+        {
+            "row": 71,
+            "col": 65,
+            "probability": 6.5
+        },
+        {
+            "row": 72,
+            "col": 58,
+            "probability": 4.5
+        },
+        {
+            "row": 74,
+            "col": 43,
+            "probability": 7.5
+        },
+        {
+            "row": 75,
+            "col": 37,
+            "probability": 3.5
+        },
+        {
+            "row": 76,
+            "col": 23,
+            "probability": 5.0
+        },
+        {
+            "row": 77,
+            "col": 14,
+            "probability": 1.5
+        },
+        {
+            "row": 79,
+            "col": 8,
+            "probability": 6.0
+        },
+        {
+            "row": 80,
+            "col": 4,
+            "probability": 9.5
+        },
+        {
+            "row": 81,
+            "col": 15,
+            "probability": 8.0
+        },
+        {
+            "row": 83,
+            "col": 24,
+            "probability": 7.0
+        },
+        {
+            "row": 84,
+            "col": 32,
+            "probability": 4.0
+        },
+        {
+            "row": 85,
+            "col": 44,
+            "probability": 6.0
+        },
+        {
+            "row": 86,
+            "col": 56,
+            "probability": 3.0
+        },
+        {
+            "row": 88,
+            "col": 65,
+            "probability": 5.5
+        },
+        {
+            "row": 89,
+            "col": 77,
+            "probability": 2.0
+        },
+        {
+            "row": 90,
+            "col": 84,
+            "probability": 6.5
+        },
+        {
+            "row": 92,
+            "col": 96,
+            "probability": 4.5
+        },
+        {
+            "row": 93,
+            "col": 97,
+            "probability": 7.5
+        },
+        {
+            "row": 94,
+            "col": 88,
+            "probability": 3.5
+        },
+        {
+            "row": 95,
+            "col": 74,
+            "probability": 5.0
+        },
+        {
+            "row": 97,
+            "col": 62,
+            "probability": 1.5
+        },
+        {
+            "row": 98,
+            "col": 57,
+            "probability": 6.0
+        }
+    ],
+    "blocked_cells": [
+        {
+            "row": 25,
+            "col": 40
+        },
+        {
+            "row": 25,
+            "col": 41
+        },
+        {
+            "row": 26,
+            "col": 40
+        },
+        {
+            "row": 26,
+            "col": 41
+        },
+        {
+            "row": 40,
+            "col": 60
+        },
+        {
+            "row": 40,
+            "col": 61
+        },
+        {
+            "row": 40,
+            "col": 62
+        },
+        {
+            "row": 60,
+            "col": 30
+        },
+        {
+            "row": 61,
+            "col": 30
+        },
+        {
+            "row": 62,
+            "col": 30
+        },
+        {
+            "row": 75,
+            "col": 75
+        },
+        {
+            "row": 75,
+            "col": 76
+        },
+        {
+            "row": 76,
+            "col": 76
+        },
+        {
+            "row": 76,
+            "col": 77
+        }
+    ]
+}

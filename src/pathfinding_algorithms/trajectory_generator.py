@@ -2,7 +2,7 @@
 
 from coordinates_grid.coordinates_grid import CoordinatesGrid
 from dataclasses import dataclass
-from pathfinding_algorithms import greedy_pathfinding, metaheuristic_pathfinding
+from pathfinding_algorithms import greedy_pathfinding, metaheuristic_pathfinding, astar_pathfinding
 import numpy as np
 
 
@@ -20,6 +20,14 @@ PATHFINDING_ALGORITHMS = {
     "lowest_cost": greedy_pathfinding.find_path_by_lowest_cost,
     "ant_colony": metaheuristic_pathfinding.find_path_by_ant_colony,
     "tabu_search": metaheuristic_pathfinding.find_path_by_tabu_search,
+    "variable_neighborhood_search": metaheuristic_pathfinding.find_path_by_variable_neighborhood_search,
+    "grasp": metaheuristic_pathfinding.find_path_by_grasp,
+    "simulated_annealing": metaheuristic_pathfinding.find_path_by_simulated_annealing,
+    "a_star_to_highest_value": astar_pathfinding.find_path_by_a_star_to_highest_value,
+    "a_star_value_cost_ratio": astar_pathfinding.find_path_by_a_star_value_cost_ratio,
+    "a_star_lowest_cost": astar_pathfinding.find_path_by_a_star_lowest_cost,
+    "namoa_star": astar_pathfinding.find_path_by_namoa_star,
+    "genetic_algorithm": metaheuristic_pathfinding.find_path_by_genetic_algorithm,
 }
 
 
@@ -28,7 +36,7 @@ class TrajectoryGenerator():
     """
     Searches a CoordinatesGrid for the highest-value path from a fixed
     starting cell (e.g. the rescue team's base - see
-    data_loader.load_mission_data's start_location), constrained by a total
+    helpers.data_loader.load_mission_data's start_location), constrained by a total
     movement-cost budget taken from weights_grid. The search strategy is
     pluggable - see PATHFINDING_ALGORITHMS.
     """

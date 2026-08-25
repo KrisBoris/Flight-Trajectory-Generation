@@ -23,12 +23,25 @@ def load_mission_data(file_path) -> dict:
         "searched_person_locations": [
           {"row": int, "col": int, "probability": float},
           ...
+        ],
+        "blocked_cells": [                        (optional, default [])
+          {"row": int, "col": int},
+          ...
         ]
       }
 
     start_location is where the drone launches from and returns to (e.g. the
     rescue team's base) - a fixed point dictated by the real scenario, not
     something TrajectoryGenerator gets to choose.
+
+    blocked_cells lists individual no-fly cells (storm cells, restricted
+    airspace, terrain the drone can't overfly) as part of the scenario
+    itself - a fixed fact about the mission, the same way start_location and
+    searched_person_locations are, rather than randomly rolled per run. See
+    coordinates_grid.test_data_generator.build_blocked_mask for turning this
+    into the boolean array pathfinding actually uses, and
+    generate_random_blocked_mask in that same module for the still-available
+    randomized alternative.
 
     Returns a dict:
       {
@@ -39,6 +52,8 @@ def load_mission_data(file_path) -> dict:
         "start_row": int, "start_col": int,
         "search_areas": list of (3,) float ndarrays (row, col, probability) -
           the same layout CoordinatesGrid.set_searched_areas expects.
+        "blocked_cells": list of (row, col) int tuples - the same layout
+          coordinates_grid.test_data_generator.build_blocked_mask expects.
       }
     """
     with open(file_path, "r") as data_file:
@@ -47,6 +62,7 @@ def load_mission_data(file_path) -> dict:
     terrain = raw_data["terrain"]
     start_location = raw_data["start_location"]
     locations = raw_data.get("searched_person_locations", [])
+    blocked_cells = raw_data.get("blocked_cells", [])
 
     search_areas = [
         np.array([location["row"], location["col"], location["probability"]], dtype=np.float64)
@@ -62,6 +78,7 @@ def load_mission_data(file_path) -> dict:
         "start_row": start_location["row"],
         "start_col": start_location["col"],
         "search_areas": search_areas,
+        "blocked_cells": [(cell["row"], cell["col"]) for cell in blocked_cells],
     }
 
 

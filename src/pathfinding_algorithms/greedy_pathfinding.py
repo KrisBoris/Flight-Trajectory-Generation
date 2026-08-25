@@ -1,7 +1,7 @@
 # greedy_pathfinding.py
 
 from coordinates_grid.coordinates_grid import CoordinatesGrid
-from constants import Constants
+from helpers.constants import Constants
 import numpy as np
 
 

@@ -1,7 +1,7 @@
 # test_data_generator.py
 
 from coordinates_grid.coordinates_grid import CoordinatesGrid
-from constants import Constants
+from helpers.constants import Constants
 import numpy as np
 
 
@@ -98,7 +98,7 @@ def generate_random_terrain_coordinates(
     Generates a rows x cols x 3 array of local (x, y, z) coordinates in
     meters, for feeding into WeightsGrid.init_from_elevation. x grows with
     column and y grows with row going up (row 0 is the "up" direction, see
-    constants.Constants.DIRECTIONS), spaced cell_size_meters apart, so the grid's
+    helpers.constants.Constants.DIRECTIONS), spaced cell_size_meters apart, so the grid's
     bottom-left cell - (row=rows-1, col=0) - sits at x = y = 0.
 
     z (altitude above sea level) starts as independent uniform noise, which
@@ -186,5 +186,30 @@ def generate_random_blocked_mask(coordinates_grid: CoordinatesGrid, blocked_shap
         anchor_col = np.random.randint(0, cols - shape_cols + 1)
 
         mask[anchor_row:anchor_row + shape_rows, anchor_col:anchor_col + shape_cols] |= shape.astype(bool)
+
+    return mask
+
+
+def build_blocked_mask(rows: int, cols: int, blocked_cells: list) -> np.ndarray:
+    """
+    Boolean blocked_mask (see TrajectoryGenerator's blocked_mask parameter)
+    built from a FIXED list of (row, col) no-fly cells - e.g. loaded from a
+    scenario JSON file's "blocked_cells" field, see
+    helpers.data_loader.load_mission_data - rather than randomly generated.
+
+    This is the deterministic counterpart to generate_random_blocked_mask
+    above, which is kept as-is (not replaced) for whenever a randomized
+    no-fly layout is wanted again instead of a fixed, scenario-defined one.
+
+    A cell outside the grid is skipped rather than raising - the same
+    tolerance CoordinatesGrid.set_searched_areas gives an out-of-range
+    coordinate - since a scenario file authored for one grid size should not
+    hard-crash if reused with a smaller one.
+    """
+    mask = np.zeros((rows, cols), dtype=bool)
+
+    for row, col in blocked_cells:
+        if 0 <= row < rows and 0 <= col < cols:
+            mask[row, col] = True
 
     return mask

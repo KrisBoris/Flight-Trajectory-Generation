@@ -1,7 +1,7 @@
 # coordinates_grid.py
 
 from coordinates_grid.weights_grid import WeightsGrid
-from constants import Constants
+from helpers.constants import Constants
 from dataclasses import dataclass, field
 import numpy as np
 

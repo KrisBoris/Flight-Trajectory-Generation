@@ -4,10 +4,10 @@
         "cols": 100,
         "altitude_range": [
             0.0,
-            20.0
+            60.0
         ],
         "cell_size_meters": 5.0,
-        "max_gradient": 0.001
+        "max_gradient": 0.2
     },
     "start_location": {
         "row": 0,
