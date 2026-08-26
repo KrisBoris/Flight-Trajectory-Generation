@@ -43,6 +43,12 @@ def load_mission_data(file_path) -> dict:
     generate_random_blocked_mask in that same module for the still-available
     randomized alternative.
 
+    Raises ValueError if start_location is itself listed in blocked_cells -
+    a self-contradictory scenario (the drone can't launch from a cell it
+    isn't allowed to enter) that should fail immediately at load time,
+    rather than surfacing later as an empty path with no explanation from
+    whichever algorithm happens to run.
+
     Returns a dict:
       {
         "rows": int, "cols": int,
@@ -62,7 +68,14 @@ def load_mission_data(file_path) -> dict:
     terrain = raw_data["terrain"]
     start_location = raw_data["start_location"]
     locations = raw_data.get("searched_person_locations", [])
-    blocked_cells = raw_data.get("blocked_cells", [])
+    start_row, start_col = start_location["row"], start_location["col"]
+    blocked_cells = [(cell["row"], cell["col"]) for cell in raw_data.get("blocked_cells", [])]
+
+    if (start_row, start_col) in blocked_cells:
+        raise ValueError(
+            f"{file_path}: start_location ({start_row}, {start_col}) is also listed in blocked_cells - "
+            "the drone can't launch from a cell it isn't allowed to enter."
+        )
 
     search_areas = [
         np.array([location["row"], location["col"], location["probability"]], dtype=np.float64)
@@ -75,10 +88,10 @@ def load_mission_data(file_path) -> dict:
         "altitude_range": tuple(terrain["altitude_range"]),
         "cell_size_meters": terrain.get("cell_size_meters", 1.0),
         "max_gradient": terrain.get("max_gradient", 0.3),
-        "start_row": start_location["row"],
-        "start_col": start_location["col"],
+        "start_row": start_row,
+        "start_col": start_col,
         "search_areas": search_areas,
-        "blocked_cells": [(cell["row"], cell["col"]) for cell in blocked_cells],
+        "blocked_cells": blocked_cells,
     }
 
 

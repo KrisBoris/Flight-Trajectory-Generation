@@ -350,6 +350,7 @@ def find_path_by_tabu_search(
     ]
 
     def evaluate(tour):
+        """Shorthand for _evaluate_tour with this call's fixed grid/start/budget/blocked_mask arguments bound in."""
         return _evaluate_tour(grid, start_row, start_col, tour, max_cost, return_cost_grid, blocked_mask, max_steps)
 
     current_tour = []
@@ -1683,6 +1684,511 @@ def _evaluate_chromosome_with_repair(
     total_cost_used = (max_cost - remaining_budget) + return_cost
 
     return path_with_return, total_value, total_cost_used, repaired_chromosome
+
+
+_DESTROY_OPERATORS = ("random", "worst", "related")
+_REPAIR_OPERATORS = ("greedy", "regret")
+
+# Scores handed to whichever (destroy, repair) pair produced a round's
+# result - see ADAPTIVE WEIGHTS in find_path_by_large_neighborhood_search's
+# docstring. A new best-ever solution is worth the most, being accepted
+# despite being worse is worth the least (but still more than an outright
+# rejection), matching the classic Ropke & Pisinger ALNS scoring scheme.
+_SCORE_NEW_BEST = 3.0
+_SCORE_IMPROVED_CURRENT = 2.0
+_SCORE_ACCEPTED_WORSE = 1.0
+_SCORE_REJECTED = 0.0
+
+
+def find_path_by_large_neighborhood_search(
+    grid: CoordinatesGrid,
+    start_row: int,
+    start_col: int,
+    max_cost: float,
+    require_return_to_base: bool = True,
+    blocked_mask: np.ndarray = None,
+    iterations: int = 400,
+    min_removal_fraction: float = 0.1,
+    max_removal_fraction: float = 0.3,
+    repair_candidate_sample_size: int = 15,
+    construction_rcl_size: int = 3,
+    initial_temperature: float = 15.0,
+    cooling_rate: float = 0.997,
+    min_temperature: float = 1e-3,
+    reaction_factor: float = 0.3,
+    segment_length: int = 20,
+    seed: int = None,
+) -> tuple[list[tuple[int, int]], float, float]:
+    """
+    Adaptive Large Neighborhood Search (ALNS) - introduced by Stefan Ropke
+    and David Pisinger ("An Adaptive Large Neighborhood Search Heuristic for
+    the Pickup and Delivery Problem with Time Windows", 2006), building on
+    the plain Large Neighborhood Search idea from Paul Shaw (1998).
+
+    GENERAL IDEA
+    ------------
+    Imagine you already built a decent LEGO castle (a full flight plan),
+    but you suspect a few rooms could be rearranged to fit a couple more
+    towers in. Instead of tearing the whole castle down and starting over
+    (that's what find_path_by_grasp does every iteration), ALNS knocks out
+    just a HANDFUL of rooms at a time - leaving most of the good castle
+    standing - and then rebuilds only the missing part, as cleverly as it
+    can. If the rebuilt castle is better, it becomes the new starting
+    castle for the next round of knock-out-and-rebuild; if not, it is
+    sometimes kept anyway (see ACCEPTANCE below) so the search doesn't get
+    stuck forever polishing the exact same castle.
+
+    Every round:
+      1. DESTROY: pick a "destroy operator" and remove a chunk of stops
+         from the current plan.
+      2. REPAIR: pick a "repair operator" and plug the resulting hole back
+         up as well as possible.
+      3. DECIDE: keep the rebuilt plan, or throw it away (see ACCEPTANCE).
+      4. LEARN: operators that tend to produce good rebuilds get picked
+         more often afterward; ones that don't get picked less (see
+         ADAPTIVE WEIGHTS) - this is the "Adaptive" in ALNS, and what
+         separates it from plain, fixed-recipe LNS.
+
+    Why remove a whole chunk instead of the single ADD/DROP/SWAP moves
+    find_path_by_tabu_search, find_path_by_variable_neighborhood_search and
+    find_path_by_grasp already use in this project? A one-move-at-a-time
+    search can only ever discover an improvement reachable by changing ONE
+    stop - if the best rearrangement genuinely needs three stops swapped
+    out together (three stops that only pay off as a matched set), such a
+    search may never stumble onto it, because every in-between state
+    (changing just 1 of the 3) looks worse and gets rejected before the
+    3rd change ever gets a chance to pay off. Ripping out several stops at
+    once and rebuilding them together lets the search "see" that whole
+    combination directly - precisely the gap ALNS is designed to fill, and
+    why it's a natural next addition alongside this project's existing
+    one-move-at-a-time and restart-from-scratch metaheuristics.
+
+    IN THIS CASE
+    ------------
+    Same solution representation as find_path_by_tabu_search, find_path_by_
+    variable_neighborhood_search, find_path_by_grasp and find_path_by_
+    simulated_annealing: an ordered list of real search targets (a "tour"),
+    evaluated by walking start -> target_1 -> ... -> target_k -> (back to
+    start) via greedy_pathfinding._walk_toward_target (_evaluate_tour),
+    subject to the same return-trip accounting
+    (greedy_pathfinding._build_return_cost_grid). Unlike those four, the
+    STARTING tour is not empty - it's built once up front by GRASP's own
+    construction routine (_construct_greedy_randomized_tour, see
+    find_path_by_grasp's CONSTRUCTION), so ALNS spends its whole iteration
+    budget improving an already-reasonable plan rather than also having to
+    discover one from nothing.
+
+    DESTROY OPERATORS
+    ------------------
+    Each removes `removal_count` stops (a random fraction of the current
+    tour, redrawn every round between min_removal_fraction and
+    max_removal_fraction) from the tour:
+      - "random" (_random_removal): removes a uniformly random subset - the
+        simplest possible chunk, a baseline against the two smarter ones.
+      - "worst" (_worst_removal): removes whichever stops are contributing
+        the LEAST value to the plan right now - for each stop, that's "how
+        much total_value would I lose if this one stop, and only this one,
+        were removed", found by literally re-evaluating the tour without
+        it. This targets exactly the stops most likely to be a poor use of
+        the budget.
+      - "related" (_related_removal, a Shaw removal): picks one random
+        stop, then removes whichever OTHER stops sit geographically
+        closest to it. Nearby stops tend to be interchangeable (there are
+        usually several other real targets in the same neighborhood
+        competing for the same "swing by here" decision), so ripping out a
+        cluster at once gives the repair step real freedom to pick a
+        genuinely different combination from that area - removing
+        scattered, unrelated stops would just get plugged back with the
+        same stops, since nothing else was ever competing for their slot.
+
+    REPAIR OPERATORS
+    ------------------
+    Each adds back up to `removal_count` stops - drawn not just from the
+    ones just removed, but from every real target not currently in the
+    tour (the budget freed up by a destroy round might now afford a
+    completely different, better target instead of whichever one used to
+    sit there):
+      - "greedy" (_greedy_repair): repeatedly inserts whichever (candidate,
+        position) pairing gives the single best resulting total_value, one
+        stop at a time, stopping early the moment nothing more fits.
+      - "regret" (_regret_repair, "regret-2" insertion): for every
+        candidate, compares its BEST possible insertion against its
+        SECOND-best. A candidate whose best spot only barely beats its
+        second-best can safely wait a round, but one with only ONE decent
+        spot (or a huge gap to its next-best) needs to be grabbed now, or
+        that opportunity may be gone once other insertions have used up
+        the budget. Regret insertion reacts to exactly this "act now or
+        regret it" signal - something plain greedy insertion, which only
+        ever looks at each candidate's single best option, cannot see.
+
+    Both operators only consider inserting a candidate at TWO positions -
+    right at the end of the tour, and right after whichever existing stop
+    sits geographically closest to it (_candidate_positions) - rather than
+    every possible position, and only look at a random sample of
+    repair_candidate_sample_size not-yet-included targets per insertion
+    rather than literally every one (_sample_candidates) - see PERFORMANCE
+    NOTE for why.
+
+    ACCEPTANCE
+    -----------
+    Like find_path_by_simulated_annealing (see that function's docstring
+    for the full mechanics), a repaired tour that's better than the
+    current one is always accepted; a worse one is still sometimes
+    accepted, with a probability that shrinks as a "temperature" cools
+    over the run (initial_temperature, cooling_rate, min_temperature play
+    identical roles to their find_path_by_simulated_annealing
+    counterparts). This is what stops ALNS from being a pure hill-climber
+    that locks onto the first local optimum its destroy/repair pairs
+    happen to find. As with every algorithm in this project, the single
+    best (path, total_value, cost_used) ever seen - not wherever the
+    search happens to end up - is what gets returned.
+
+    ADAPTIVE WEIGHTS
+    ------------------
+    Each destroy operator and each repair operator starts with an equal
+    chance of being picked (roulette-wheel selection weighted by these
+    scores - see _roulette_pick). Every round scores the (destroy, repair)
+    pairing that produced it using the _SCORE_* constants above: finding a
+    new best-ever solution scores highest, merely improving the current
+    solution scores less, being accepted anyway despite being worse scores
+    less still, and outright rejection scores nothing. Every
+    segment_length rounds (_update_operator_weights), each operator's
+    weight is nudged toward its average recent score - blended in by
+    reaction_factor (closer to 1 forgets older performance faster, closer
+    to 0 barely reacts at all) - and its scoreboard resets for the next
+    segment. Over a whole run this lets ALNS gradually lean on whichever
+    destroy/repair combination is actually paying off for THIS specific
+    scenario, rather than committing to one fixed strategy for the whole
+    run the way this project's other metaheuristics do.
+
+    PERFORMANCE NOTE: every insertion attempt re-walks the whole tour from
+    scratch (see find_path_by_tabu_search's PERFORMANCE NOTE) - restricting
+    each repair round to repair_candidate_sample_size sampled candidates
+    and 2 insertion positions apiece (rather than every remaining candidate
+    at every possible position) is what keeps a single destroy+repair
+    round's cost roughly comparable to one find_path_by_grasp construction
+    step, instead of scaling with the full candidate pool squared - this
+    project's own "_dense" scenario files have up to 510 targets, where an
+    unrestricted search would be far too slow to run `iterations` times.
+    """
+    rows, cols = grid.rows, grid.cols
+    values = grid.coordinates_values
+    rng = np.random.default_rng(seed)
+    max_steps = 8 * (rows + cols)
+    return_cost_grid = greedy_pathfinding._build_return_cost_grid(grid, start_row, start_col, blocked_mask, max_steps) if require_return_to_base else None
+
+    candidate_rows, candidate_cols = np.nonzero(values > Constants.DEFAULT_PROBABILITY)
+    candidate_pool = [
+        (int(candidate_row), int(candidate_col))
+        for candidate_row, candidate_col in zip(candidate_rows, candidate_cols)
+        if (int(candidate_row), int(candidate_col)) != (start_row, start_col)
+        and (blocked_mask is None or not blocked_mask[candidate_row, candidate_col])
+    ]
+
+    def evaluate_tour(tour):
+        """Shorthand for _evaluate_tour with this call's fixed grid/start/budget/blocked_mask arguments bound in."""
+        return _evaluate_tour(
+            grid, start_row, start_col, tour, max_cost, return_cost_grid, blocked_mask, max_steps,
+        )
+
+    if not candidate_pool:
+        _, path, total_value, cost_used = evaluate_tour([])
+        return path, total_value, cost_used
+
+    current_tour = _construct_greedy_randomized_tour(
+        grid, start_row, start_col, max_cost, return_cost_grid, blocked_mask, max_steps,
+        candidate_pool, construction_rcl_size, rng,
+    )
+    feasible, current_path, current_total_value, current_cost_used = evaluate_tour(current_tour)
+    if not feasible:
+        current_tour = []  # construction itself should never fail, but fall back safely if it somehow does
+        _, current_path, current_total_value, current_cost_used = evaluate_tour(current_tour)
+
+    best_tour = list(current_tour)
+    best_path, best_total_value, best_cost_used = current_path, current_total_value, current_cost_used
+
+    destroy_weights = {name: 1.0 for name in _DESTROY_OPERATORS}
+    repair_weights = {name: 1.0 for name in _REPAIR_OPERATORS}
+    destroy_scores = {name: 0.0 for name in _DESTROY_OPERATORS}
+    repair_scores = {name: 0.0 for name in _REPAIR_OPERATORS}
+    destroy_uses = {name: 0 for name in _DESTROY_OPERATORS}
+    repair_uses = {name: 0 for name in _REPAIR_OPERATORS}
+
+    temperature = initial_temperature
+
+    for iteration_index in range(1, iterations + 1):
+        destroy_name = _roulette_pick(destroy_weights, rng)
+        repair_name = _roulette_pick(repair_weights, rng)
+
+        tour_length = len(current_tour)
+        if tour_length > 0:
+            min_removal = max(1, round(min_removal_fraction * tour_length))
+            max_removal = max(min_removal, round(max_removal_fraction * tour_length))
+            removal_count = int(rng.integers(min_removal, max_removal + 1))
+        else:
+            removal_count = 0
+
+        if destroy_name == "random":
+            partial_tour = _random_removal(current_tour, removal_count, rng)
+        elif destroy_name == "worst":
+            partial_tour = _worst_removal(current_tour, removal_count, evaluate_tour, current_total_value)
+        else:  # "related"
+            partial_tour = _related_removal(current_tour, removal_count, rng)
+
+        # Restore roughly as many stops as were removed - if the tour was
+        # empty (e.g. construction found nothing affordable), still make a
+        # modest attempt to seed it from scratch instead of stalling forever.
+        insertion_budget = (tour_length - len(partial_tour)) if tour_length > 0 else min(5, len(candidate_pool))
+
+        if repair_name == "greedy":
+            repaired_tour = _greedy_repair(partial_tour, insertion_budget, candidate_pool, repair_candidate_sample_size, evaluate_tour, rng)
+        else:  # "regret"
+            repaired_tour = _regret_repair(partial_tour, insertion_budget, candidate_pool, repair_candidate_sample_size, evaluate_tour, rng)
+
+        feasible, path, total_value, cost_used = evaluate_tour(repaired_tour)
+
+        if not feasible:
+            score = _SCORE_REJECTED
+        else:
+            delta = total_value - current_total_value
+            # A strictly better repair is always kept; a worse one is still
+            # sometimes kept, with probability exp(delta / temperature) -
+            # the same Metropolis criterion find_path_by_simulated_annealing
+            # uses, so ALNS can wander past a round that didn't pay off
+            # instead of freezing onto the first local optimum it finds.
+            accept = delta > 0 or rng.random() < np.exp(delta / temperature)
+
+            if accept:
+                current_tour, current_path, current_total_value, current_cost_used = repaired_tour, path, total_value, cost_used
+
+                if total_value > best_total_value:
+                    best_tour = list(repaired_tour)
+                    best_path, best_total_value, best_cost_used = path, total_value, cost_used
+                    score = _SCORE_NEW_BEST
+                elif delta > 0:
+                    score = _SCORE_IMPROVED_CURRENT
+                else:
+                    score = _SCORE_ACCEPTED_WORSE
+            else:
+                score = _SCORE_REJECTED
+
+        destroy_scores[destroy_name] += score
+        repair_scores[repair_name] += score
+        destroy_uses[destroy_name] += 1
+        repair_uses[repair_name] += 1
+
+        if iteration_index % segment_length == 0:
+            _update_operator_weights(destroy_weights, destroy_scores, destroy_uses, reaction_factor)
+            _update_operator_weights(repair_weights, repair_scores, repair_uses, reaction_factor)
+
+        temperature = max(temperature * cooling_rate, min_temperature)
+
+    return best_path, best_total_value, best_cost_used
+
+
+def _random_removal(tour: list, count: int, rng: np.random.Generator) -> list:
+    """See DESTROY OPERATORS ("random") in find_path_by_large_neighborhood_search's docstring."""
+    if count <= 0 or not tour:
+        return list(tour)
+
+    count = min(count, len(tour))
+    remove_indices = set(rng.choice(len(tour), size=count, replace=False).tolist())
+    return [cell for index, cell in enumerate(tour) if index not in remove_indices]
+
+
+def _worst_removal(tour: list, count: int, evaluate_tour, current_total_value: float) -> list:
+    """
+    See DESTROY OPERATORS ("worst") in find_path_by_large_neighborhood_
+    search's docstring. For each stop, evaluates the tour with just that
+    one stop taken out and compares total_value against the full tour's -
+    the drop is that stop's "contribution". Removes the `count` stops with
+    the smallest contribution (least valuable to keep).
+    """
+    if count <= 0 or not tour:
+        return list(tour)
+
+    count = min(count, len(tour))
+    contributions = []
+    for index in range(len(tour)):
+        reduced_tour = tour[:index] + tour[index + 1:]
+        _, _, total_value_without, _ = evaluate_tour(reduced_tour)
+        contributions.append((current_total_value - total_value_without, index))
+
+    contributions.sort(key=lambda entry: entry[0])  # smallest contribution (least valuable stop) first
+    remove_indices = {index for _, index in contributions[:count]}
+    return [cell for index, cell in enumerate(tour) if index not in remove_indices]
+
+
+def _related_removal(tour: list, count: int, rng: np.random.Generator) -> list:
+    """
+    See DESTROY OPERATORS ("related") in find_path_by_large_neighborhood_
+    search's docstring - a Shaw removal. Picks one random seed stop, then
+    removes the `count` - 1 other stops geographically closest to it (the
+    seed itself, at distance 0, is always among them).
+    """
+    if count <= 0 or not tour:
+        return list(tour)
+
+    count = min(count, len(tour))
+    seed_row, seed_col = tour[int(rng.integers(len(tour)))]
+    distances = [(np.hypot(row - seed_row, col - seed_col), index) for index, (row, col) in enumerate(tour)]
+    distances.sort(key=lambda entry: entry[0])  # nearest (most related) to the seed first
+
+    remove_indices = {index for _, index in distances[:count]}
+    return [cell for index, cell in enumerate(tour) if index not in remove_indices]
+
+
+def _sample_candidates(candidates: list, sample_size: int, rng: np.random.Generator) -> list:
+    """Uniformly samples up to sample_size candidates without replacement - all of them if there are fewer."""
+    if len(candidates) <= sample_size:
+        return list(candidates)
+
+    indices = rng.choice(len(candidates), size=sample_size, replace=False)
+    return [candidates[index] for index in indices]
+
+
+def _candidate_positions(tour: list, candidate: tuple) -> list:
+    """
+    The (small, fixed) set of tour positions _greedy_repair and
+    _regret_repair actually try for inserting `candidate` - see
+    PERFORMANCE NOTE in find_path_by_large_neighborhood_search's docstring
+    for why this isn't every position. Always includes the end of the tour
+    (a plain append, like every ADD move elsewhere in this project); if the
+    tour isn't empty, also includes the slot right after whichever existing
+    stop is geographically closest to `candidate` - inserting a new stop
+    next to its nearest neighbor is usually cheap, since the two are
+    already close together.
+    """
+    if not tour:
+        return [0]
+
+    candidate_row, candidate_col = candidate
+    distances = [np.hypot(candidate_row - row, candidate_col - col) for row, col in tour]
+    nearest_index = int(np.argmin(distances))
+
+    return sorted({len(tour), nearest_index + 1})
+
+
+def _greedy_repair(partial_tour: list, insertion_budget: int, candidate_pool: list, sample_size: int, evaluate_tour, rng: np.random.Generator) -> list:
+    """
+    See REPAIR OPERATORS ("greedy") in find_path_by_large_neighborhood_
+    search's docstring. Runs up to insertion_budget rounds; each round
+    samples sample_size not-yet-included candidates (_sample_candidates),
+    tries each at its _candidate_positions, and commits whichever single
+    (candidate, position) pairing gives the best resulting total_value.
+    Stops early the moment a round finds nothing feasible to insert.
+    """
+    tour = list(partial_tour)
+
+    for _ in range(insertion_budget):
+        in_tour = set(tour)
+        not_in_tour = [candidate for candidate in candidate_pool if candidate not in in_tour]
+        if not not_in_tour:
+            break
+
+        sample = _sample_candidates(not_in_tour, sample_size, rng)
+
+        best_value = None
+        best_tour = None
+        for candidate in sample:
+            for position in _candidate_positions(tour, candidate):
+                candidate_tour = tour[:position] + [candidate] + tour[position:]
+                feasible, _, total_value, _ = evaluate_tour(candidate_tour)
+                if feasible and (best_value is None or total_value > best_value):
+                    best_value = total_value
+                    best_tour = candidate_tour
+
+        if best_tour is None:
+            break  # nothing sampled this round was both feasible and reachable
+        tour = best_tour
+
+    return tour
+
+
+def _regret_repair(partial_tour: list, insertion_budget: int, candidate_pool: list, sample_size: int, evaluate_tour, rng: np.random.Generator) -> list:
+    """
+    See REPAIR OPERATORS ("regret") in find_path_by_large_neighborhood_
+    search's docstring. Like _greedy_repair, but each round picks the
+    sampled candidate with the largest "regret" - the gap between its best
+    and second-best feasible insertion - rather than the candidate with the
+    single best insertion outright. A candidate with only one feasible
+    position gets infinite regret (there is no second-best to fall back on
+    - it must be taken now or the chance is gone), matching the classic
+    regret-2 insertion heuristic.
+    """
+    tour = list(partial_tour)
+
+    for _ in range(insertion_budget):
+        in_tour = set(tour)
+        not_in_tour = [candidate for candidate in candidate_pool if candidate not in in_tour]
+        if not not_in_tour:
+            break
+
+        sample = _sample_candidates(not_in_tour, sample_size, rng)
+
+        best_regret = None
+        best_candidate_tour = None
+        for candidate in sample:
+            scored_positions = []
+            for position in _candidate_positions(tour, candidate):
+                candidate_tour = tour[:position] + [candidate] + tour[position:]
+                feasible, _, total_value, _ = evaluate_tour(candidate_tour)
+                if feasible:
+                    scored_positions.append((total_value, candidate_tour))
+
+            if not scored_positions:
+                continue  # no feasible spot at all for this candidate this round
+
+            scored_positions.sort(key=lambda entry: entry[0], reverse=True)
+            best_value, best_position_tour = scored_positions[0]
+            second_best_value = scored_positions[1][0] if len(scored_positions) > 1 else -np.inf
+            regret = best_value - second_best_value
+
+            if best_regret is None or regret > best_regret:
+                best_regret = regret
+                best_candidate_tour = best_position_tour
+
+        if best_candidate_tour is None:
+            break  # nothing sampled this round had even one feasible spot
+        tour = best_candidate_tour
+
+    return tour
+
+
+def _roulette_pick(weights: dict, rng: np.random.Generator) -> str:
+    """
+    Picks one operator name from `weights`, at random, with probability
+    proportional to its current weight - see ADAPTIVE WEIGHTS in
+    find_path_by_large_neighborhood_search's docstring. Falls back to a
+    plain uniform pick if every weight has somehow collapsed to zero.
+    """
+    names = list(weights.keys())
+    raw_weights = np.array([weights[name] for name in names], dtype=np.float64)
+    total_weight = raw_weights.sum()
+
+    if total_weight <= 0:
+        return names[int(rng.integers(len(names)))]
+
+    probabilities = raw_weights / total_weight
+    return names[rng.choice(len(names), p=probabilities)]
+
+
+def _update_operator_weights(weights: dict, scores: dict, uses: dict, reaction_factor: float) -> None:
+    """
+    See ADAPTIVE WEIGHTS in find_path_by_large_neighborhood_search's
+    docstring. Called once per segment_length rounds for the destroy
+    weights, and separately for the repair weights. For every operator used
+    at least once this segment, blends its weight toward its average score
+    this segment by reaction_factor; an operator never picked this segment
+    keeps its existing weight unchanged. Mutates `weights` in place and
+    resets `scores`/`uses` to zero for the next segment.
+    """
+    for name in weights:
+        if uses[name] > 0:
+            average_score = scores[name] / uses[name]
+            weights[name] = max(weights[name] * (1.0 - reaction_factor) + reaction_factor * average_score, 1e-6)
+        scores[name] = 0.0
+        uses[name] = 0
 
 
 if __name__ == "__main__":

@@ -21,7 +21,13 @@ DRONE_PARAMS_DATA = Path(__file__).resolve().parent.parent / "drone_data" / DRON
 
 
 def main():
-
+    """
+    End-to-end demo run: loads a scenario/drone config, builds the
+    CoordinatesGrid and its terrain-derived WeightsGrid, runs
+    TrajectoryGenerator with the "grasp" algorithm from the mission's start
+    cell, prints a one-line summary, then opens the GUI to visualize the
+    resulting path.
+    """
     mission_data = load_mission_data(MISSION_DATA)
     drone_params = load_drone_params(DRONE_PARAMS_DATA)
     rows, cols = mission_data["rows"], mission_data["cols"]

@@ -1,0 +1,5 @@
+scenario,algorithm,repetition,steps,cost_used,budget_used_pct,total_value,targets_hit,targets_total,runtime_seconds,error
+scenario1.json,greedy,1,995,4999.0,100.0,5.5,1,15,0.31,
+scenario1.json,value_cost_ratio,1,635,3865.88,77.3,79.5,15,15,0.31,
+scenario1.json,a_star_to_highest_value,1,802,4959.76,99.2,78.0,14,15,0.4,
+scenario1.json,grasp,1,783,4692.86,93.9,79.5,15,15,1.03,

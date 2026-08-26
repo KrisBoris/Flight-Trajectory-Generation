@@ -8,29 +8,44 @@ import numpy as np
 @dataclass
 class WeightsGrid():
     """
-    Data class przechowująca wagi krawędzi łączących wierzchołki grafu ze współrzędnymi 
+    Data class holding the movement cost of every directed edge between
+    neighboring cells in a CoordinatesGrid - one cost per cell per compass
+    direction (see helpers.constants.Constants.DIRECTIONS), stored as a
+    rows x cols x 8 array.
     """
 
     weights: np.ndarray = field()
 
 
     def __post_init__(self):
-        
+        """
+        Runs right after the dataclass's generated __init__: coerces
+        weights to a 3D float64 numpy array if it wasn't already one,
+        raising ValueError if it isn't 3D to begin with (a shape no
+        pathfinding algorithm in this project could make sense of).
+        """
         if not isinstance(self.weights, np.ndarray):
             self.weights = np.array(self.weights, dtype=np.float64)
 
         if self.weights.ndim != 3:
-            raise ValueError(f"Weights matrix must be three-dimensional, not {self.coordinates.ndim}")
-        
+            raise ValueError(f"Weights matrix must be three-dimensional, not {self.weights.ndim}")
+
         if not np.issubdtype(self.weights.dtype, np.floating):
             self.weights = self.weights.astype(np.float64)
 
 
     def init_empty_grid(self, x: int, y: int) -> bool:
+        """
+        (Re)initializes weights as an x by y by 8 grid, every edge cost
+        starting at a flat 1.0 - a placeholder later overwritten by
+        init_from_elevation's real, terrain-derived costs. Returns False
+        (and prints a message, leaving the grid untouched) if x or y isn't
+        positive.
+        """
         if x <= 0 or y <= 0:
             print(f"Grid size must be greater than zero, not {x}x{y}")
             return False
-                
+
         self.weights = np.ones([x, y, 8], dtype=np.float64)
         return True
 

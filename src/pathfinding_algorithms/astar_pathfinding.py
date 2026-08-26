@@ -54,8 +54,10 @@ def find_path_by_a_star_to_highest_value(
     A* to the highest-value cell, repeated - this otherwise exactly mirrors
     greedy_pathfinding.find_path_to_highest_value:
 
-    1. Find the highest-value unvisited, unblocked cell in
-       grid.coordinates_values.
+    1. Find the highest-value unvisited, unblocked, real cell (value above
+       Constants.DEFAULT_PROBABILITY - see greedy_pathfinding.find_path_to_
+       highest_value's STOPPING ON BACKGROUND CELLS, which applies here
+       identically) in grid.coordinates_values.
     2. Search for the CHEAPEST possible route to it using true A* search
        (see _a_star_path) - rather than find_path_to_highest_value's
        cheaper, but not necessarily optimal, "diagonal, then straight,
@@ -90,9 +92,15 @@ def find_path_by_a_star_to_highest_value(
     expand_cap = max_expanded_cells if max_expanded_cells is not None else rows * cols
 
     while True:
-        # 1. Find the highest-value unvisited, unblocked cell.
+        # 1. Find the highest-value unvisited, unblocked, real cell - see
+        # greedy_pathfinding.find_path_to_highest_value's STOPPING ON
+        # BACKGROUND CELLS. Without the DEFAULT_PROBABILITY floor, once
+        # every real target is gone this would fall back to np.argmax's
+        # tie-break (the first cell in row-major order) among every
+        # remaining background cell, all tied at the same value - an
+        # arbitrary, cost-blind detour rather than stopping.
         unavailable = visited if blocked_mask is None else visited | blocked_mask
-        candidate_values = np.where(unavailable, -np.inf, values)
+        candidate_values = np.where(unavailable | (values <= Constants.DEFAULT_PROBABILITY), -np.inf, values)
         if not np.isfinite(candidate_values).any():
             break
 
@@ -533,6 +541,7 @@ def _a_star_path(
     min_edge_cost = _min_real_edge_cost(weights)
 
     def heuristic(row, col):
+        """Admissible lower-bound estimate of the remaining cost from (row, col) to the target - see the docstring above."""
         return max(abs(row - target_row), abs(col - target_col)) * min_edge_cost
 
     g_score = {(start_row, start_col): 0.0}
@@ -683,19 +692,24 @@ def _namoa_star_pareto_frontier(
     max_cell_value = float(values.max())
 
     def cost_heuristic(row, col):
+        """Admissible lower-bound estimate of the remaining cost from (row, col) to the target."""
         return max(abs(row - target_row), abs(col - target_col)) * min_edge_cost
 
     def value_heuristic(row, col):
-        # An optimistic (never-underestimating) upper bound on remaining
-        # value: the best possible case is every remaining step landing on
-        # the single most valuable cell anywhere on the grid.
+        """
+        An optimistic (never-underestimating) upper bound on remaining
+        value: the best possible case is every remaining step landing on
+        the single most valuable cell anywhere on the grid.
+        """
         return max(abs(row - target_row), abs(col - target_col)) * max_cell_value
 
     def at_least_as_good(a, b):
-        # True if `a` costs no more AND has collected no less value than
-        # `b` - used both to reject a new label that a's existing presence
-        # makes redundant (including an exact tie), and to prune old labels
-        # a strictly new one supersedes.
+        """
+        True if `a` costs no more AND has collected no less value than
+        `b` - used both to reject a new label that a's existing presence
+        makes redundant (including an exact tie), and to prune old labels
+        a strictly new one supersedes.
+        """
         return a[0] <= b[0] and a[1] >= b[1]
 
     # A label is (cost, value, row, col, path_cells, label_id) - label_id is

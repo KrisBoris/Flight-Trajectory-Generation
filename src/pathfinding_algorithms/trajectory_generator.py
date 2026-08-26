@@ -2,7 +2,7 @@
 
 from coordinates_grid.coordinates_grid import CoordinatesGrid
 from dataclasses import dataclass
-from pathfinding_algorithms import greedy_pathfinding, metaheuristic_pathfinding, astar_pathfinding
+from pathfinding_algorithms import greedy_pathfinding, metaheuristic_pathfinding, astar_pathfinding, exact_pathfinding
 import numpy as np
 
 
@@ -28,6 +28,8 @@ PATHFINDING_ALGORITHMS = {
     "a_star_lowest_cost": astar_pathfinding.find_path_by_a_star_lowest_cost,
     "namoa_star": astar_pathfinding.find_path_by_namoa_star,
     "genetic_algorithm": metaheuristic_pathfinding.find_path_by_genetic_algorithm,
+    "large_neighborhood_search": metaheuristic_pathfinding.find_path_by_large_neighborhood_search,
+    "exact_solver": exact_pathfinding.find_path_by_exact_solver,
 }
 
 

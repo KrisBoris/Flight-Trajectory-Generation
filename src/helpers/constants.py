@@ -17,8 +17,14 @@ class Constants():
     # before any real search area is set - i.e. "no information yet", not a
     # genuine signal. Pathfinding algorithms that reason about value (see
     # greedy_pathfinding._next_fresh_candidate) use this to skip untouched
-    # background cells rather than treating them as real targets.
-    DEFAULT_PROBABILITY: float = 0.1
+    # background cells rather than treating them as real targets. Kept at
+    # 0.0 rather than some small positive "baseline chance" specifically so
+    # an untouched cell contributes nothing to total_value if a path happens
+    # to pass through it - every value/cost ratio and "highest value" target
+    # search in this project already filters candidates against this exact
+    # constant (never a hardcoded number), so this stays the single source
+    # of truth for "real signal vs. background" throughout.
+    DEFAULT_PROBABILITY: float = 0.0
 
     # Offsets (delta_row, delta_col) for the 8 directions stored in the last
     # dimension of WeightsGrid.weights: index 0 is "up", the rest follow

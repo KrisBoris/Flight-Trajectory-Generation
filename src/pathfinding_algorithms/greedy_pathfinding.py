@@ -133,7 +133,8 @@ def find_path_to_highest_value(
     blocked_mask: np.ndarray = None,
 ) -> tuple[list[tuple[int, int]], float, float]:
     """
-    1. Find the highest-value unvisited, unblocked cell in
+    1. Find the highest-value unvisited, unblocked, real cell (value above
+       Constants.DEFAULT_PROBABILITY - see STOPPING ON BACKGROUND CELLS) in
        grid.coordinates_values.
     2. Walk toward it (see _walk_toward_target: shortest path, rotating
        around obstacles one cell at a time), cost-checked the same way as
@@ -148,6 +149,24 @@ def find_path_to_highest_value(
     full pathfinding search - it can fail to find a way around a large or
     maze-like blocked_mask even when one exists, unlike
     find_path_for_highest_neighbor_value.
+
+    STOPPING ON BACKGROUND CELLS
+    -------------------------------
+    Step 1 only ever considers a cell whose value is above Constants.
+    DEFAULT_PROBABILITY - the same "is this a real signal or just
+    unexplored background" floor _next_fresh_candidate applies for
+    find_path_by_value_cost_ratio/find_path_by_lowest_cost. Without it,
+    once every real target has been visited, step 1 would fall back to
+    picking among every remaining background cell - all tied at exactly
+    the same value - and np.argmax's tie-break (the first cell in
+    row-major order) is not cost-aware at all, so this would walk toward
+    an essentially arbitrary, potentially expensive cell for zero
+    additional value rather than stopping. Unlike find_path_for_highest_
+    neighbor_value (which intentionally keeps moving through background
+    territory until the budget itself runs out - see that function's own
+    docstring), this function actively SEEKS a specific target each round,
+    and once no real target is left worth seeking, continuing serves no
+    purpose.
     """
     rows, cols = grid.rows, grid.cols
     values = grid.coordinates_values
@@ -164,9 +183,14 @@ def find_path_to_highest_value(
     return_cost_grid = _build_return_cost_grid(grid, start_row, start_col, blocked_mask, max_steps) if require_return_to_base else None
 
     while True:
-        # 1. Find the highest-value unvisited, unblocked cell.
+        # 1. Find the highest-value unvisited, unblocked, real cell - see
+        # STOPPING ON BACKGROUND CELLS above. Without the DEFAULT_PROBABILITY
+        # floor, once every real target is gone this would fall back to
+        # np.argmax's tie-break (the first cell in row-major order) among
+        # every remaining background cell, all tied at the same value - an
+        # arbitrary, cost-blind detour rather than stopping.
         unavailable = visited if blocked_mask is None else visited | blocked_mask
-        candidate_values = np.where(unavailable, -np.inf, values)
+        candidate_values = np.where(unavailable | (values <= Constants.DEFAULT_PROBABILITY), -np.inf, values)
         if not np.isfinite(candidate_values).any():
             break
 

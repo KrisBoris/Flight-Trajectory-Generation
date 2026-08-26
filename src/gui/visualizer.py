@@ -25,6 +25,14 @@ SURFACE_MESH_TARGET = 50
 # length - see _path_arrow_indices.
 PATH_ARROW_COUNT = 60
 
+# Roughly how many sequence-number labels to draw along a path, regardless
+# of its length - see _path_label_indices. Numbering every single cell was
+# tried first and looked fine on a short synthetic path, but on any real
+# path from this project's algorithms (hundreds to low thousands of cells)
+# the numbered dots overlap into an unreadable solid blob - this sampled
+# subset keeps the numbers legible at any path length instead.
+PATH_LABEL_COUNT = 40
+
 
 def _max_pool_2d(array: np.ndarray, block_size: int) -> np.ndarray:
     """
@@ -92,6 +100,29 @@ def _path_arrow_indices(path_length: int) -> np.ndarray:
     return np.arange(0, path_length - 1, stride)
 
 
+def _path_label_indices(path_length: int) -> np.ndarray:
+    """
+    Indices of path cells to number with their sequence position, spaced out
+    so a long path gets roughly PATH_LABEL_COUNT numbers rather than one per
+    cell - see PATH_LABEL_COUNT for why. Always includes the first and last
+    index (0 and path_length - 1) so the numbered path still shows its true
+    start and end sequence numbers, even when the stride would otherwise
+    skip past them. Returns every index for a path no longer than
+    PATH_LABEL_COUNT to begin with, matching the original "number every
+    dot" behavior for short paths where that is actually readable.
+    """
+    if path_length <= 0:
+        return np.array([], dtype=int)
+    if path_length <= PATH_LABEL_COUNT:
+        return np.arange(path_length)
+
+    stride = max(1, path_length // PATH_LABEL_COUNT)
+    indices = np.arange(0, path_length, stride)
+    if indices[-1] != path_length - 1:
+        indices = np.append(indices, path_length - 1)
+    return indices
+
+
 def _direction_chevron_offsets(dx: float, dy: float, wing_length: float, wing_angle_degrees: float = 25.0) -> tuple:
     """
     Given a horizontal direction vector (dx, dy) pointing from an arrow's
@@ -123,6 +154,7 @@ def _direction_chevron_offsets(dx: float, dy: float, wing_length: float, wing_an
     angle = np.radians(wing_angle_degrees)
 
     def rotate(x, y, theta):
+        """Rotates the 2D vector (x, y) counterclockwise by theta radians."""
         return x * np.cos(theta) - y * np.sin(theta), x * np.sin(theta) + y * np.cos(theta)
 
     return rotate(back_x, back_y, angle), rotate(back_x, back_y, -angle)
@@ -146,6 +178,13 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         terrain_coordinates: np.ndarray = None,
         blocked_mask: np.ndarray = None,
     ):
+        """
+        Builds the window's tabs: a flat "2D grid" view always, plus a
+        "3D terrain" view only when terrain_coordinates is given (there's
+        no terrain to plot a surface over otherwise). Both views share the
+        same color normalization, scaled to this coordinates_grid's own
+        min/max value, so the two tabs read consistently.
+        """
         super().__init__()
 
         self.setWindowTitle("Flight Trajectory Visualizer")
@@ -169,6 +208,12 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
 
 
     def _build_2d_view(self, values: np.ndarray, norm: mcolors.Normalize, path: list, blocked_mask: np.ndarray) -> FigureCanvasQTAgg:
+        """
+        Builds the flat "2D grid" tab: values rendered as a color-coded
+        image (see PROBABILITY_COLORMAP), with blocked_mask (if given) and
+        path (if given) drawn on top via _draw_2d_blocked_mask/
+        _draw_2d_path. Returns the finished canvas ready to add as a tab.
+        """
         figure = Figure(figsize=(10, 9))
         canvas = FigureCanvasQTAgg(figure)
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
@@ -196,6 +241,11 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
 
 
     def _draw_2d_blocked_mask(self, axes, blocked_mask: np.ndarray) -> Patch:
+        """
+        Draws blocked_mask as a black, semi-transparent overlay on the 2D
+        grid axes (see the overlay comment below) and returns the legend
+        entry for it.
+        """
         # A black, semi-transparent overlay - opaque where blocked_mask is
         # True, fully transparent elsewhere - drawn on top of the probability
         # colors so blocked cells stay visually distinct regardless of what
@@ -208,13 +258,42 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
 
 
     def _draw_2d_path(self, axes, path: list) -> list:
+        """
+        Draws the full path as a connected line on the 2D grid axes, plus
+        a start marker, an end marker at the true turnaround point (see
+        _path_end_index), sampled sequence-number labels (see
+        _path_label_indices) and sampled direction arrows (see
+        _path_arrow_indices). Returns the list of legend handles for
+        whichever of these were actually drawn.
+        """
         path_rows = [cell[0] for cell in path]
         path_cols = [cell[1] for cell in path]
 
-        path_line, = axes.plot(path_cols, path_rows, color="blue", linewidth=1.5, marker="o", markersize=3, label="path")
-        start_marker, = axes.plot(path_cols[0], path_rows[0], color="black", marker="*", markersize=16, label="start")
+        path_line, = axes.plot(path_cols, path_rows, color="blue", linewidth=1.5, marker="o", markersize=3, label="path", zorder=3)
+
+        # A sampled subset of cells (see _path_label_indices/PATH_LABEL_
+        # COUNT) gets a bigger white-filled marker with a checkpoint number
+        # inside - numbering every single dot was tried first and looked
+        # fine on a short synthetic path, but overlapped into an unreadable
+        # solid blob on any real, hundreds-of-cells path from this
+        # project's algorithms. The number printed is this checkpoint's own
+        # 1-indexed position among the sampled subset (1, 2, 3, ...) - not
+        # its raw index in `path` - since with a stride skipping most cells,
+        # printing the raw path index would show large, unexplained gaps
+        # (e.g. 20, 40, 60, ...) instead of a simple visiting order.
+        label_indices = _path_label_indices(len(path))
+        if label_indices.size > 0:
+            label_x = np.asarray(path_cols)[label_indices]
+            label_y = np.asarray(path_rows)[label_indices]
+            axes.scatter(label_x, label_y, s=150, facecolors="white", edgecolors="blue", linewidths=1.1, zorder=4)
+            for label_number, (x, y) in enumerate(zip(label_x, label_y), start=1):
+                axes.annotate(str(label_number), (x, y), ha="center", va="center", fontsize=6, color="blue", zorder=4.5)
+
+        start_marker, = axes.plot(path_cols[0], path_rows[0], color="black", marker="*", markersize=16, label="start", zorder=6)
 
         handles = [path_line, start_marker]
+        if label_indices.size > 0:
+            handles.append(Line2D([0], [0], marker="o", linestyle="None", markersize=8, markerfacecolor="white", markeredgecolor="blue", label="sequence #"))
 
         end_index = _path_end_index(path)
         if end_index != 0:
@@ -249,6 +328,14 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         terrain_coordinates: np.ndarray,
         blocked_mask: np.ndarray,
     ) -> FigureCanvasQTAgg:
+        """
+        Builds the "3D terrain" tab: a colored surface mesh over
+        terrain_coordinates (subsampled - see SURFACE_MESH_TARGET - and
+        colored via a max-pooled, per-face version of values), with
+        blocked_mask (if given) and path (if given) drawn hovering just
+        above it via _draw_3d_blocked_mask/_draw_3d_path. Returns the
+        finished canvas ready to add as a tab.
+        """
         figure = Figure(figsize=(10, 9))
         canvas = FigureCanvasQTAgg(figure)
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
@@ -328,6 +415,13 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
 
 
     def _draw_3d_blocked_mask(self, axes, blocked_mask: np.ndarray, terrain_coordinates: np.ndarray, hover_height: float):
+        """
+        Marks every blocked_mask cell with a black X, hovering
+        hover_height above the terrain surface (see _build_3d_view for why
+        a height offset is needed at all) so it stays visible instead of
+        being drawn on/under the surface mesh. Returns the legend entry
+        for it.
+        """
         blocked_x = terrain_coordinates[:, :, 0][blocked_mask]
         blocked_y = terrain_coordinates[:, :, 1][blocked_mask]
         blocked_z = terrain_coordinates[:, :, 2][blocked_mask] + hover_height
@@ -336,11 +430,44 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
 
 
     def _draw_3d_path(self, axes, path: list, terrain_coordinates: np.ndarray, hover_height: float) -> list:
+        """
+        The 3D counterpart of _draw_2d_path: draws the path as a connected
+        line hovering hover_height above the terrain, plus a start marker,
+        an end marker at the true turnaround point (see _path_end_index),
+        sampled sequence-number labels (see _path_label_indices) and
+        sampled direction chevrons (see _direction_chevron_offsets, used
+        instead of matplotlib's own 3D arrowheads - see that function's
+        docstring for why). Returns the list of legend handles for
+        whichever of these were actually drawn.
+        """
         path_x = [terrain_coordinates[row, col, 0] for row, col in path]
         path_y = [terrain_coordinates[row, col, 1] for row, col in path]
         path_z = [terrain_coordinates[row, col, 2] + hover_height for row, col in path]
 
         path_line, = axes.plot(path_x, path_y, path_z, color="blue", linewidth=2.5, marker="o", markersize=4, label="path", zorder=11)
+
+        # A sampled subset of cells (see _path_label_indices/PATH_LABEL_
+        # COUNT) gets a bigger white-filled marker with a checkpoint number
+        # inside - numbering every single dot was tried first and looked
+        # fine on a short synthetic path, but overlapped into an unreadable
+        # solid blob on any real, hundreds-of-cells path from this
+        # project's algorithms. The number printed is this checkpoint's own
+        # 1-indexed position among the sampled subset (1, 2, 3, ...) - not
+        # its raw index in `path` - since with a stride skipping most cells,
+        # printing the raw path index would show large, unexplained gaps
+        # (e.g. 20, 40, 60, ...) instead of a simple visiting order.
+        label_indices = _path_label_indices(len(path))
+        if label_indices.size > 0:
+            label_x = np.asarray(path_x)[label_indices]
+            label_y = np.asarray(path_y)[label_indices]
+            label_z = np.asarray(path_z)[label_indices]
+            axes.scatter(
+                label_x, label_y, label_z, facecolors="white", edgecolors="blue", linewidths=1.1,
+                s=110, depthshade=False, zorder=13,
+            )
+            for label_number, (x, y, z) in enumerate(zip(label_x, label_y, label_z), start=1):
+                axes.text(x, y, z, str(label_number), ha="center", va="center", fontsize=6, color="blue", zorder=14)
+
         # depthshade=False disables mplot3d's default distance-based alpha
         # fade - without it, this single black star can fade into
         # near-invisibility against the terrain depending on the current
@@ -359,6 +486,8 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         )
 
         handles = [path_line, start_marker]
+        if label_indices.size > 0:
+            handles.append(Line2D([0], [0], marker="o", linestyle="None", markersize=8, markerfacecolor="white", markeredgecolor="blue", label="sequence #"))
 
         # See _path_end_index - with a return leg, path[-1] is just the
         # start cell again, so the real "end" worth marking is the
