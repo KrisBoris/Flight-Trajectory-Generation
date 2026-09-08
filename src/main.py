@@ -46,6 +46,7 @@ def main():
         altitude_range=mission_data["altitude_range"],
         cell_size_meters=mission_data["cell_size_meters"],
         max_gradient=mission_data["max_gradient"],
+        seed=mission_data["terrain_seed"],
     )
     coordinates_grid.weights_grid.init_from_elevation(
         terrain_coordinates,

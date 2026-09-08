@@ -17,7 +17,8 @@ def load_mission_data(file_path) -> dict:
           "rows": int, "cols": int,
           "altitude_range": [min_altitude, max_altitude],
           "cell_size_meters": float,        (optional, default 1.0)
-          "max_gradient": float             (optional, default 0.3)
+          "max_gradient": float,            (optional, default 0.3)
+          "seed": int                       (optional, default 0)
         },
         "start_location": {"row": int, "col": int},
         "searched_person_locations": [
@@ -43,6 +44,16 @@ def load_mission_data(file_path) -> dict:
     generate_random_blocked_mask in that same module for the still-available
     randomized alternative.
 
+    terrain.seed is what makes a scenario's randomly generated elevation
+    reproducible: passed straight through as "terrain_seed" for callers
+    (see main.py and helpers.benchmark._build_grid) to hand to
+    coordinates_grid.test_data_generator.generate_random_terrain_
+    coordinates' own `seed` parameter, so the same scenario file always
+    regenerates the exact same map instead of a fresh random one every run.
+    Defaults to 0 (not None) when the field is missing, so an older
+    scenario file without it still gets a fixed, reproducible seed rather
+    than silently reverting to non-deterministic terrain.
+
     Raises ValueError if start_location is itself listed in blocked_cells -
     a self-contradictory scenario (the drone can't launch from a cell it
     isn't allowed to enter) that should fail immediately at load time,
@@ -55,6 +66,7 @@ def load_mission_data(file_path) -> dict:
         "altitude_range": (min_altitude, max_altitude),
         "cell_size_meters": float,
         "max_gradient": float,
+        "terrain_seed": int,
         "start_row": int, "start_col": int,
         "search_areas": list of (3,) float ndarrays (row, col, probability) -
           the same layout CoordinatesGrid.set_searched_areas expects.
@@ -88,6 +100,7 @@ def load_mission_data(file_path) -> dict:
         "altitude_range": tuple(terrain["altitude_range"]),
         "cell_size_meters": terrain.get("cell_size_meters", 1.0),
         "max_gradient": terrain.get("max_gradient", 0.3),
+        "terrain_seed": terrain.get("seed", 0),
         "start_row": start_row,
         "start_col": start_col,
         "search_areas": search_areas,

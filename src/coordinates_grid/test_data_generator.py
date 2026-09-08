@@ -93,6 +93,7 @@ def generate_random_terrain_coordinates(
     altitude_range: tuple[float, float],
     cell_size_meters: float = 1.0,
     max_gradient: float = 0.3,
+    seed: int = None,
 ) -> np.ndarray:
     """
     Generates a rows x cols x 3 array of local (x, y, z) coordinates in
@@ -108,6 +109,15 @@ def generate_random_terrain_coordinates(
     see that function's docstring for what max_gradient means and how to
     tune it - and the result is shifted (not rescaled) so its lowest point
     sits at min_altitude.
+
+    seed controls the initial noise via a private np.random.Generator
+    (default_rng), not the global numpy random state - the same seed with
+    the same rows/cols/altitude_range/cell_size_meters/max_gradient always
+    regenerates the exact same terrain, and calling this doesn't disturb
+    unrelated code's own use of np.random elsewhere. See
+    helpers.data_loader.load_mission_data's "terrain_seed" - every scenario
+    JSON file's own terrain.seed field is what's normally passed in here,
+    so a given scenario always regenerates the same map.
 
     It's a shift rather than a rescale deliberately: the redistribution
     pulls extreme values toward the mean and shrinks the elevation range, but
@@ -138,7 +148,8 @@ def generate_random_terrain_coordinates(
     y = np.arange(rows - 1, -1, -1) * cell_size_meters
     grid_x, grid_y = np.meshgrid(x, y)
 
-    grid_z = np.random.uniform(min_altitude, max_altitude, size=(rows, cols))
+    rng = np.random.default_rng(seed)
+    grid_z = rng.uniform(min_altitude, max_altitude, size=(rows, cols))
     grid_z = _limit_elevation_gradient(grid_z, cell_size_meters, max_gradient)
     grid_z = grid_z - grid_z.min() + min_altitude
 

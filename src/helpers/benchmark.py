@@ -3,6 +3,7 @@
 from coordinates_grid.coordinates_grid import CoordinatesGrid
 from coordinates_grid.weights_grid import WeightsGrid
 from coordinates_grid.test_data_generator import generate_random_terrain_coordinates, build_blocked_mask
+from gui.visualizer import save_trajectory_image
 from helpers.data_loader import load_mission_data, load_drone_params
 from pathfinding_algorithms.trajectory_generator import TrajectoryGenerator, PATHFINDING_ALGORITHMS
 from pathlib import Path
@@ -14,7 +15,8 @@ import time
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_SCENARIO_DIR = PROJECT_ROOT / "test_data"
 DEFAULT_DRONE_CONFIG_PATH = PROJECT_ROOT / "drone_data" / "large_drone_config.json"
-DEFAULT_RESULTS_PATH = Path(__file__).resolve().parent / "benchmark_results.csv"
+DEFAULT_BENCHMARK_DIR = PROJECT_ROOT / "benchmark"
+DEFAULT_RESULTS_PATH = DEFAULT_BENCHMARK_DIR / "benchmark_results.csv"
 
 
 def run_benchmark(
@@ -22,17 +24,30 @@ def run_benchmark(
     drone_config_path: Path = DEFAULT_DRONE_CONFIG_PATH,
     algorithms: list = None,
     scenario_files: list = None,
-    terrain_seed: int = 0,
+    terrain_seed: int = None,
     repetitions: int = 1,
     results_path: Path = DEFAULT_RESULTS_PATH,
+    save_images: bool = True,
 ) -> list:
     """
     Runs every pathfinding algorithm in PATHFINDING_ALGORITHMS (or just
     `algorithms`, if given) against every scenario*.json file found in
     scenario_dir (or just `scenario_files`, if given), `repetitions` times
     each, prints a results table to the console, and saves the same data as
-    a CSV file at results_path. Returns the list of result dicts - the same
-    rows written to the CSV.
+    a CSV file at results_path (by default, inside this project's
+    `benchmark/` directory - see DEFAULT_BENCHMARK_DIR). Returns the list
+    of result dicts - the same rows written to the CSV.
+
+    IMAGES: right after each successful run, if save_images is true (the
+    default), a single PNG combining that run's 2D top-down view and (when
+    the scenario has terrain) 3D terrain view - the same views
+    gui.visualizer.launch_gui shows interactively, rendered headlessly via
+    gui.visualizer.save_trajectory_image - is saved alongside the CSV, in
+    the same directory as results_path, named
+    "<scenario stem>__<algorithm>__rep<repetition>.png". A run that raised
+    an exception has nothing valid to draw and is skipped. This roughly
+    doubles the cost of a full sweep (rendering, especially the 3D surface,
+    is not free) - pass save_images=False to skip it and only get the CSV.
 
     PERFORMANCE WARNING: this is a genuinely large sweep by default, and
     `repetitions` multiplies it further. Several algorithms in this project
@@ -67,12 +82,19 @@ def run_benchmark(
     simply produce identical rows across every repetition, since nothing
     about them is randomized - that is expected, not a bug.
 
-    Terrain is regenerated per scenario with a fixed terrain_seed (not one
-    seed per algorithm or per repetition) so every algorithm on a given
-    scenario - across every repetition - sees identical terrain/costs; only
-    each algorithm's own internal randomness varies between repetitions, a
-    fair, apples-to-apples comparison, the same convention used throughout
-    this project's own algorithm comparisons.
+    Terrain is regenerated per scenario with a fixed seed (not one seed per
+    algorithm or per repetition) so every algorithm on a given scenario -
+    across every repetition - sees identical terrain/costs; only each
+    algorithm's own internal randomness varies between repetitions, a fair,
+    apples-to-apples comparison, the same convention used throughout this
+    project's own algorithm comparisons. By default (terrain_seed=None)
+    that fixed seed is whatever each scenario file's own "terrain.seed"
+    field specifies (see helpers.data_loader.load_mission_data's
+    "terrain_seed") - so a given scenario file always regenerates the same
+    map on its own, with no argument needed here. Passing an explicit
+    terrain_seed overrides every scenario in this run with that same value
+    instead - useful for forcing several different scenario files to a
+    common seed, but rarely needed otherwise.
 
     A (scenario, algorithm, repetition) combination that raises an
     exception is recorded with a non-empty "error" column instead of
@@ -90,13 +112,16 @@ def run_benchmark(
 
     drone_params = load_drone_params(Path(drone_config_path))
 
+    results_path = Path(results_path)
+    results_path.parent.mkdir(parents=True, exist_ok=True)
+
     results = []
     total_runs = len(scenario_files) * len(algorithms) * repetitions
     run_index = 0
 
     for scenario_file in scenario_files:
         mission_data = load_mission_data(scenario_file)
-        grid, blocked_mask = _build_grid(mission_data, drone_params, terrain_seed)
+        grid, blocked_mask, terrain_coordinates = _build_grid(mission_data, drone_params, terrain_seed)
         targets = [(int(area[0]), int(area[1])) for area in mission_data["search_areas"]]
         trajectory_generator = TrajectoryGenerator(grid=grid)
 
@@ -120,6 +145,13 @@ def run_benchmark(
                     path_cells = set(path)
                     targets_hit = sum(1 for cell in targets if cell in path_cells)
                     budget_used_pct = 100 * cost_used / drone_params["max_cost"] if drone_params["max_cost"] > 0 else 0.0
+
+                    if save_images:
+                        image_path = results_path.parent / f"{scenario_file.stem}__{algorithm}__rep{repetition}.png"
+                        save_trajectory_image(
+                            grid, image_path, path=path,
+                            terrain_coordinates=terrain_coordinates, blocked_mask=blocked_mask,
+                        )
 
                     results.append({
                         "scenario": scenario_file.name,
@@ -153,7 +185,7 @@ def run_benchmark(
     _print_results_table(results)
     if repetitions > 1:
         _print_summary_table(results)
-    _save_results_csv(results, Path(results_path))
+    _save_results_csv(results, results_path)
     print(f"\nSaved {len(results)} results to {results_path}")
 
     return results
@@ -166,7 +198,16 @@ def _build_grid(mission_data: dict, drone_params: dict, terrain_seed: int):
     factored out so run_benchmark can reuse it once per scenario file
     instead of duplicating main.py's setup inline for every algorithm run.
 
-    Returns (grid, blocked_mask).
+    terrain_seed=None (run_benchmark's own default) uses mission_data's own
+    "terrain_seed" (the scenario file's terrain.seed field) so this
+    scenario always regenerates the same map; passing an explicit
+    terrain_seed overrides that for this call.
+
+    Returns (grid, blocked_mask, terrain_coordinates) - terrain_coordinates
+    is returned too (rather than only being used internally to build the
+    weights) so callers can pass it straight into gui.visualizer.
+    save_trajectory_image/launch_gui for a 3D terrain view, without
+    regenerating it a second time.
     """
     rows, cols = mission_data["rows"], mission_data["cols"]
     grid = CoordinatesGrid(
@@ -176,13 +217,14 @@ def _build_grid(mission_data: dict, drone_params: dict, terrain_seed: int):
     grid.init_grids(rows, cols)
     grid.set_searched_areas(mission_data["search_areas"])
 
-    np.random.seed(terrain_seed)
+    seed = terrain_seed if terrain_seed is not None else mission_data["terrain_seed"]
     terrain_coordinates = generate_random_terrain_coordinates(
         rows,
         cols,
         altitude_range=mission_data["altitude_range"],
         cell_size_meters=mission_data["cell_size_meters"],
         max_gradient=mission_data["max_gradient"],
+        seed=seed,
     )
     grid.weights_grid.init_from_elevation(
         terrain_coordinates,
@@ -193,7 +235,7 @@ def _build_grid(mission_data: dict, drone_params: dict, terrain_seed: int):
 
     blocked_mask = build_blocked_mask(rows, cols, mission_data["blocked_cells"])
 
-    return grid, blocked_mask
+    return grid, blocked_mask, terrain_coordinates
 
 
 def _print_results_table(results: list) -> None:

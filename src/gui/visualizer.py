@@ -1,6 +1,7 @@
 # visualizer.py
 
 from coordinates_grid.coordinates_grid import CoordinatesGrid
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
@@ -18,7 +19,7 @@ PROBABILITY_COLORMAP = "RdYlGn_r"
 
 BLOCKED_LABEL = "blocked (no-fly)"
 
-# Target cells-across for the 3D surface mesh - see _build_3d_view.
+# Target cells-across for the 3D surface mesh - see _populate_3d_axes.
 SURFACE_MESH_TARGET = 50
 
 # Roughly how many direction arrows to draw along a path, regardless of its
@@ -160,6 +161,309 @@ def _direction_chevron_offsets(dx: float, dy: float, wing_length: float, wing_an
     return rotate(back_x, back_y, angle), rotate(back_x, back_y, -angle)
 
 
+def _draw_2d_blocked_mask(axes, blocked_mask: np.ndarray) -> Patch:
+    """
+    Draws blocked_mask as a black, semi-transparent overlay on the 2D grid
+    axes (see the overlay comment below) and returns the legend entry for
+    it.
+    """
+    # A black, semi-transparent overlay - opaque where blocked_mask is
+    # True, fully transparent elsewhere - drawn on top of the probability
+    # colors so blocked cells stay visually distinct regardless of what
+    # probability they'd otherwise show.
+    overlay = np.zeros((*blocked_mask.shape, 4))
+    overlay[blocked_mask] = (0.0, 0.0, 0.0, 0.6)
+    axes.imshow(overlay, origin="upper")
+
+    return Patch(facecolor="black", alpha=0.6, label=BLOCKED_LABEL)
+
+
+def _draw_2d_path(axes, path: list) -> list:
+    """
+    Draws the full path as a connected line on the 2D grid axes, plus a
+    start marker, an end marker at the true turnaround point (see
+    _path_end_index), sampled sequence-number labels (see
+    _path_label_indices) and sampled direction arrows (see
+    _path_arrow_indices). Returns the list of legend handles for whichever
+    of these were actually drawn.
+    """
+    path_rows = [cell[0] for cell in path]
+    path_cols = [cell[1] for cell in path]
+
+    path_line, = axes.plot(path_cols, path_rows, color="blue", linewidth=1.5, marker="o", markersize=3, label="path", zorder=3)
+
+    # A sampled subset of cells (see _path_label_indices/PATH_LABEL_
+    # COUNT) gets a bigger white-filled marker with a checkpoint number
+    # inside - numbering every single dot was tried first and looked
+    # fine on a short synthetic path, but overlapped into an unreadable
+    # solid blob on any real, hundreds-of-cells path from this
+    # project's algorithms. The number printed is this checkpoint's own
+    # 1-indexed position among the sampled subset (1, 2, 3, ...) - not
+    # its raw index in `path` - since with a stride skipping most cells,
+    # printing the raw path index would show large, unexplained gaps
+    # (e.g. 20, 40, 60, ...) instead of a simple visiting order.
+    label_indices = _path_label_indices(len(path))
+    if label_indices.size > 0:
+        label_x = np.asarray(path_cols)[label_indices]
+        label_y = np.asarray(path_rows)[label_indices]
+        axes.scatter(label_x, label_y, s=150, facecolors="white", edgecolors="blue", linewidths=1.1, zorder=4)
+        for label_number, (x, y) in enumerate(zip(label_x, label_y), start=1):
+            axes.annotate(str(label_number), (x, y), ha="center", va="center", fontsize=6, color="blue", zorder=4.5)
+
+    start_marker, = axes.plot(path_cols[0], path_rows[0], color="black", marker="*", markersize=16, label="start", zorder=6)
+
+    handles = [path_line, start_marker]
+    if label_indices.size > 0:
+        handles.append(Line2D([0], [0], marker="o", linestyle="None", markersize=8, markerfacecolor="white", markeredgecolor="blue", label="sequence #"))
+
+    end_index = _path_end_index(path)
+    if end_index != 0:
+        end_marker, = axes.plot(
+            path_cols[end_index], path_rows[end_index],
+            color="red", marker="X", markersize=13, markeredgecolor="black", label="end", zorder=6,
+        )
+        handles.append(end_marker)
+
+    arrow_indices = _path_arrow_indices(len(path))
+    if arrow_indices.size > 0:
+        arrow_x = np.asarray(path_cols)[arrow_indices]
+        arrow_y = np.asarray(path_rows)[arrow_indices]
+        arrow_dx = np.asarray(path_cols)[arrow_indices + 1] - arrow_x
+        arrow_dy = np.asarray(path_rows)[arrow_indices + 1] - arrow_y
+
+        axes.quiver(
+            arrow_x, arrow_y, arrow_dx, arrow_dy,
+            angles="xy", scale_units="xy", scale=1,
+            color="black", width=0.003, headwidth=5, headlength=6, zorder=5,
+        )
+        handles.append(Line2D([0], [0], color="black", marker=">", linestyle="None", markersize=8, label="direction"))
+
+    return handles
+
+
+def _draw_3d_blocked_mask(axes, blocked_mask: np.ndarray, terrain_coordinates: np.ndarray, hover_height: float):
+    """
+    Marks every blocked_mask cell with a black X, hovering hover_height
+    above the terrain surface (see _populate_3d_axes for why a height
+    offset is needed at all) so it stays visible instead of being drawn
+    on/under the surface mesh. Returns the legend entry for it.
+    """
+    blocked_x = terrain_coordinates[:, :, 0][blocked_mask]
+    blocked_y = terrain_coordinates[:, :, 1][blocked_mask]
+    blocked_z = terrain_coordinates[:, :, 2][blocked_mask] + hover_height
+
+    return axes.scatter(blocked_x, blocked_y, blocked_z, color="black", marker="x", s=80, linewidths=2, label=BLOCKED_LABEL, zorder=10)
+
+
+def _draw_3d_path(axes, path: list, terrain_coordinates: np.ndarray, hover_height: float) -> list:
+    """
+    The 3D counterpart of _draw_2d_path: draws the path as a connected line
+    hovering hover_height above the terrain, plus a start marker, an end
+    marker at the true turnaround point (see _path_end_index), sampled
+    sequence-number labels (see _path_label_indices) and sampled direction
+    chevrons (see _direction_chevron_offsets, used instead of matplotlib's
+    own 3D arrowheads - see that function's docstring for why). Returns
+    the list of legend handles for whichever of these were actually drawn.
+    """
+    path_x = [terrain_coordinates[row, col, 0] for row, col in path]
+    path_y = [terrain_coordinates[row, col, 1] for row, col in path]
+    path_z = [terrain_coordinates[row, col, 2] + hover_height for row, col in path]
+
+    path_line, = axes.plot(path_x, path_y, path_z, color="blue", linewidth=2.5, marker="o", markersize=4, label="path", zorder=11)
+
+    # A sampled subset of cells (see _path_label_indices/PATH_LABEL_
+    # COUNT) gets a bigger white-filled marker with a checkpoint number
+    # inside - numbering every single dot was tried first and looked
+    # fine on a short synthetic path, but overlapped into an unreadable
+    # solid blob on any real, hundreds-of-cells path from this
+    # project's algorithms. The number printed is this checkpoint's own
+    # 1-indexed position among the sampled subset (1, 2, 3, ...) - not
+    # its raw index in `path` - since with a stride skipping most cells,
+    # printing the raw path index would show large, unexplained gaps
+    # (e.g. 20, 40, 60, ...) instead of a simple visiting order.
+    label_indices = _path_label_indices(len(path))
+    if label_indices.size > 0:
+        label_x = np.asarray(path_x)[label_indices]
+        label_y = np.asarray(path_y)[label_indices]
+        label_z = np.asarray(path_z)[label_indices]
+        axes.scatter(
+            label_x, label_y, label_z, facecolors="white", edgecolors="blue", linewidths=1.1,
+            s=110, depthshade=False, zorder=13,
+        )
+        for label_number, (x, y, z) in enumerate(zip(label_x, label_y, label_z), start=1):
+            axes.text(x, y, z, str(label_number), ha="center", va="center", fontsize=6, color="blue", zorder=14)
+
+    # depthshade=False disables mplot3d's default distance-based alpha
+    # fade - without it, this single black star can fade into
+    # near-invisibility against the terrain depending on the current
+    # view/zoom, since there's no averaging with nearby points the way a
+    # dense scatter would have. magenta is used deliberately because it
+    # falls outside PROBABILITY_COLORMAP's red -> yellow -> green range
+    # entirely - a fill color pulled from inside that range (e.g.
+    # yellow) can blend right into terrain of a similar shade, and the
+    # background/default probability often lands close to yellow. The
+    # black edge adds definition against light terrain, and the bigger
+    # size makes it easier to spot at a glance.
+    start_marker = axes.scatter(
+        [path_x[0]], [path_y[0]], [path_z[0]],
+        color="magenta", marker="*", s=400, edgecolors="black", linewidths=1,
+        depthshade=False, label="start", zorder=20,
+    )
+
+    handles = [path_line, start_marker]
+    if label_indices.size > 0:
+        handles.append(Line2D([0], [0], marker="o", linestyle="None", markersize=8, markerfacecolor="white", markeredgecolor="blue", label="sequence #"))
+
+    # See _path_end_index - with a return leg, path[-1] is just the
+    # start cell again, so the real "end" worth marking is the
+    # turnaround point.
+    end_index = _path_end_index(path)
+    if end_index != 0:
+        end_marker = axes.scatter(
+            [path_x[end_index]], [path_y[end_index]], [path_z[end_index]],
+            color="red", marker="*", s=400, edgecolors="black", linewidths=1,
+            depthshade=False, label="end", zorder=20,
+        )
+        handles.append(end_marker)
+
+    arrow_indices = _path_arrow_indices(len(path))
+    if arrow_indices.size > 0:
+        for i in arrow_indices:
+            segment_dx = path_x[i + 1] - path_x[i]
+            segment_dy = path_y[i + 1] - path_y[i]
+            tip_x, tip_y, tip_z = path_x[i + 1], path_y[i + 1], path_z[i + 1]
+            # Wing length scales with this segment's own horizontal
+            # length (a fixed grid-step distance) rather than the
+            # plot's overall span, so chevrons stay a legible size
+            # regardless of how large the map is.
+            wing_length = np.hypot(segment_dx, segment_dy) * 0.6
+            for wing_dx, wing_dy in _direction_chevron_offsets(segment_dx, segment_dy, wing_length):
+                axes.plot([tip_x, tip_x + wing_dx], [tip_y, tip_y + wing_dy], [tip_z, tip_z], color="black", linewidth=2, zorder=15)
+
+        handles.append(Line2D([0], [0], color="black", marker=">", linestyle="None", markersize=8, label="direction"))
+
+    return handles
+
+
+def _populate_2d_axes(figure: Figure, axes, values: np.ndarray, norm: mcolors.Normalize, path: list, blocked_mask: np.ndarray) -> None:
+    """
+    Draws the full flat "2D grid" view - values rendered as a color-coded
+    image (see PROBABILITY_COLORMAP), with blocked_mask (if given) and path
+    (if given) drawn on top via _draw_2d_blocked_mask/_draw_2d_path -
+    directly onto an already-created `axes` (and its parent `figure`, for
+    the colorbar). Shared by TrajectoryVisualizerWindow's interactive "2D
+    grid" tab and save_trajectory_image's static composite image, so both
+    render identically.
+    """
+    image = axes.imshow(values, cmap=PROBABILITY_COLORMAP, norm=norm, origin="upper")
+    figure.colorbar(image, ax=axes, label="Probability")
+    axes.set_title("Search probability")
+    axes.set_xlabel("col")
+    axes.set_ylabel("row")
+
+    legend_handles = []
+
+    if blocked_mask is not None:
+        legend_handles.append(_draw_2d_blocked_mask(axes, blocked_mask))
+
+    if path:
+        legend_handles.extend(_draw_2d_path(axes, path))
+
+    if legend_handles:
+        axes.legend(handles=legend_handles, loc="upper right")
+
+
+def _populate_3d_axes(
+    figure: Figure,
+    axes,
+    values: np.ndarray,
+    norm: mcolors.Normalize,
+    path: list,
+    terrain_coordinates: np.ndarray,
+    blocked_mask: np.ndarray,
+) -> None:
+    """
+    Draws the full "3D terrain" view - a colored surface mesh over
+    terrain_coordinates (subsampled - see SURFACE_MESH_TARGET - and colored
+    via a max-pooled, per-face version of values), with blocked_mask (if
+    given) and path (if given) drawn hovering just above it via
+    _draw_3d_blocked_mask/_draw_3d_path - directly onto an already-created
+    3D `axes` (and its parent `figure`, for the colorbar). Shared by
+    TrajectoryVisualizerWindow's interactive "3D terrain" tab and
+    save_trajectory_image's static composite image, so both render
+    identically.
+    """
+    figure.subplots_adjust(left=0.02, right=0.95, top=0.95, bottom=0.05)
+
+    # plot_surface draws one edge-outlined quad per 4 neighboring cells.
+    # At full resolution a big grid (e.g. 100x100 = 10000 quads) packs so
+    # many thin edge lines into the same screen space that they create
+    # their own visual noise - a "fishnet" moire - making even genuinely
+    # smooth terrain look spiky. Subsampling to roughly SURFACE_MESH_TARGET
+    # cells across keeps the mesh legible regardless of grid size; a
+    # SURFACE_MESH_TARGET of 50 leaves grids up to 50x50 (the size the
+    # surface styling was tuned against) completely unaffected.
+    rows, cols = terrain_coordinates.shape[:2]
+    stride = max(1, round(max(rows, cols) / SURFACE_MESH_TARGET))
+
+    # The mesh geometry (x, y, z) is smooth after max_gradient-limiting,
+    # so simple strided sampling loses no meaningful shape detail. The
+    # probability values are the opposite - sparse, isolated spikes - so
+    # they're downsampled with _max_pool_2d instead, and each face takes
+    # the max (not the average) of its 4 corners: averaging would dilute
+    # an isolated hotspot toward the background, and either approach
+    # could otherwise make a "close to maximum" cell render yellow-ish or
+    # not show up at all if a plain stride happened to skip it.
+    x = terrain_coordinates[::stride, ::stride, 0]
+    y = terrain_coordinates[::stride, ::stride, 1]
+    z = terrain_coordinates[::stride, ::stride, 2]
+    pooled_values = _max_pool_2d(values, stride)
+
+    # plot_surface connects every 4 neighboring cells into one quad face,
+    # so it needs one color per face rather than per cell. shade=False
+    # keeps that color exact instead of matplotlib's default lighting
+    # tint, which would distort the probability spectrum.
+    colormap = matplotlib.colormaps[PROBABILITY_COLORMAP]
+    face_values = np.maximum(
+        np.maximum(pooled_values[:-1, :-1], pooled_values[1:, :-1]),
+        np.maximum(pooled_values[:-1, 1:], pooled_values[1:, 1:]),
+    )
+    face_colors = colormap(norm(face_values))
+
+    axes.plot_surface(x, y, z, facecolors=face_colors, rstride=1, cstride=1, linewidth=0.2, edgecolor="dimgray", shade=False, zorder=1)
+
+    mappable = matplotlib.cm.ScalarMappable(norm=norm, cmap=colormap)
+    mappable.set_array(values)
+    figure.colorbar(mappable, ax=axes, label="Probability", shrink=0.6)
+
+    axes.set_title("Terrain with search probability")
+    axes.set_xlabel("x (m)")
+    axes.set_ylabel("y (m)")
+    axes.set_zlabel("z (m, altitude)")
+
+    # Now that the terrain is a solid surface rather than a wireframe, a
+    # path/marker drawn exactly at ground level gets partly hidden behind
+    # it - mplot3d doesn't z-sort separate artists perfectly, it only
+    # approximates depth per-artist. Forcing a high zorder on the
+    # path/markers - with a low zorder on the surface itself - is what
+    # actually guarantees mplot3d draws them on top, regardless of how
+    # small the height offset is; hover_height itself only needs to be
+    # just enough to read as "hovering above" rather than "painted onto"
+    # the ground, so it's kept small and close to the surface.
+    hover_height = max((z.max() - z.min()) * 0.03, 0.15)
+
+    legend_handles = []
+
+    if blocked_mask is not None:
+        legend_handles.append(_draw_3d_blocked_mask(axes, blocked_mask, terrain_coordinates, hover_height))
+
+    if path:
+        legend_handles.extend(_draw_3d_path(axes, path, terrain_coordinates, hover_height))
+
+    if legend_handles:
+        axes.legend(handles=legend_handles, loc="upper right")
+
+
 class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
     """
     Displays a CoordinatesGrid's probability values as a color-coded matrix -
@@ -209,115 +513,19 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
 
     def _build_2d_view(self, values: np.ndarray, norm: mcolors.Normalize, path: list, blocked_mask: np.ndarray) -> FigureCanvasQTAgg:
         """
-        Builds the flat "2D grid" tab: values rendered as a color-coded
-        image (see PROBABILITY_COLORMAP), with blocked_mask (if given) and
-        path (if given) drawn on top via _draw_2d_blocked_mask/
-        _draw_2d_path. Returns the finished canvas ready to add as a tab.
+        Builds the flat "2D grid" tab: a Qt-backed canvas whose axes are
+        populated by _populate_2d_axes. Returns the finished canvas ready
+        to add as a tab.
         """
         figure = Figure(figsize=(10, 9))
         canvas = FigureCanvasQTAgg(figure)
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         axes = figure.add_subplot(111)
 
-        image = axes.imshow(values, cmap=PROBABILITY_COLORMAP, norm=norm, origin="upper")
-        figure.colorbar(image, ax=axes, label="Probability")
-        axes.set_title("Search probability")
-        axes.set_xlabel("col")
-        axes.set_ylabel("row")
-
-        legend_handles = []
-
-        if blocked_mask is not None:
-            legend_handles.append(self._draw_2d_blocked_mask(axes, blocked_mask))
-
-        if path:
-            legend_handles.extend(self._draw_2d_path(axes, path))
-
-        if legend_handles:
-            axes.legend(handles=legend_handles, loc="upper right")
+        _populate_2d_axes(figure, axes, values, norm, path, blocked_mask)
 
         canvas.draw()
         return canvas
-
-
-    def _draw_2d_blocked_mask(self, axes, blocked_mask: np.ndarray) -> Patch:
-        """
-        Draws blocked_mask as a black, semi-transparent overlay on the 2D
-        grid axes (see the overlay comment below) and returns the legend
-        entry for it.
-        """
-        # A black, semi-transparent overlay - opaque where blocked_mask is
-        # True, fully transparent elsewhere - drawn on top of the probability
-        # colors so blocked cells stay visually distinct regardless of what
-        # probability they'd otherwise show.
-        overlay = np.zeros((*blocked_mask.shape, 4))
-        overlay[blocked_mask] = (0.0, 0.0, 0.0, 0.6)
-        axes.imshow(overlay, origin="upper")
-
-        return Patch(facecolor="black", alpha=0.6, label=BLOCKED_LABEL)
-
-
-    def _draw_2d_path(self, axes, path: list) -> list:
-        """
-        Draws the full path as a connected line on the 2D grid axes, plus
-        a start marker, an end marker at the true turnaround point (see
-        _path_end_index), sampled sequence-number labels (see
-        _path_label_indices) and sampled direction arrows (see
-        _path_arrow_indices). Returns the list of legend handles for
-        whichever of these were actually drawn.
-        """
-        path_rows = [cell[0] for cell in path]
-        path_cols = [cell[1] for cell in path]
-
-        path_line, = axes.plot(path_cols, path_rows, color="blue", linewidth=1.5, marker="o", markersize=3, label="path", zorder=3)
-
-        # A sampled subset of cells (see _path_label_indices/PATH_LABEL_
-        # COUNT) gets a bigger white-filled marker with a checkpoint number
-        # inside - numbering every single dot was tried first and looked
-        # fine on a short synthetic path, but overlapped into an unreadable
-        # solid blob on any real, hundreds-of-cells path from this
-        # project's algorithms. The number printed is this checkpoint's own
-        # 1-indexed position among the sampled subset (1, 2, 3, ...) - not
-        # its raw index in `path` - since with a stride skipping most cells,
-        # printing the raw path index would show large, unexplained gaps
-        # (e.g. 20, 40, 60, ...) instead of a simple visiting order.
-        label_indices = _path_label_indices(len(path))
-        if label_indices.size > 0:
-            label_x = np.asarray(path_cols)[label_indices]
-            label_y = np.asarray(path_rows)[label_indices]
-            axes.scatter(label_x, label_y, s=150, facecolors="white", edgecolors="blue", linewidths=1.1, zorder=4)
-            for label_number, (x, y) in enumerate(zip(label_x, label_y), start=1):
-                axes.annotate(str(label_number), (x, y), ha="center", va="center", fontsize=6, color="blue", zorder=4.5)
-
-        start_marker, = axes.plot(path_cols[0], path_rows[0], color="black", marker="*", markersize=16, label="start", zorder=6)
-
-        handles = [path_line, start_marker]
-        if label_indices.size > 0:
-            handles.append(Line2D([0], [0], marker="o", linestyle="None", markersize=8, markerfacecolor="white", markeredgecolor="blue", label="sequence #"))
-
-        end_index = _path_end_index(path)
-        if end_index != 0:
-            end_marker, = axes.plot(
-                path_cols[end_index], path_rows[end_index],
-                color="red", marker="X", markersize=13, markeredgecolor="black", label="end", zorder=6,
-            )
-            handles.append(end_marker)
-
-        arrow_indices = _path_arrow_indices(len(path))
-        if arrow_indices.size > 0:
-            arrow_x = np.asarray(path_cols)[arrow_indices]
-            arrow_y = np.asarray(path_rows)[arrow_indices]
-            arrow_dx = np.asarray(path_cols)[arrow_indices + 1] - arrow_x
-            arrow_dy = np.asarray(path_rows)[arrow_indices + 1] - arrow_y
-
-            axes.quiver(
-                arrow_x, arrow_y, arrow_dx, arrow_dy,
-                angles="xy", scale_units="xy", scale=1,
-                color="black", width=0.003, headwidth=5, headlength=6, zorder=5,
-            )
-            handles.append(Line2D([0], [0], color="black", marker=">", linestyle="None", markersize=8, label="direction"))
-
-        return handles
 
 
     def _build_3d_view(
@@ -329,195 +537,19 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         blocked_mask: np.ndarray,
     ) -> FigureCanvasQTAgg:
         """
-        Builds the "3D terrain" tab: a colored surface mesh over
-        terrain_coordinates (subsampled - see SURFACE_MESH_TARGET - and
-        colored via a max-pooled, per-face version of values), with
-        blocked_mask (if given) and path (if given) drawn hovering just
-        above it via _draw_3d_blocked_mask/_draw_3d_path. Returns the
-        finished canvas ready to add as a tab.
+        Builds the "3D terrain" tab: a Qt-backed canvas whose 3D axes are
+        populated by _populate_3d_axes. Returns the finished canvas ready
+        to add as a tab.
         """
         figure = Figure(figsize=(10, 9))
         canvas = FigureCanvasQTAgg(figure)
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         axes = figure.add_subplot(111, projection="3d")
-        figure.subplots_adjust(left=0.02, right=0.95, top=0.95, bottom=0.05)
 
-        # plot_surface draws one edge-outlined quad per 4 neighboring cells.
-        # At full resolution a big grid (e.g. 100x100 = 10000 quads) packs so
-        # many thin edge lines into the same screen space that they create
-        # their own visual noise - a "fishnet" moire - making even genuinely
-        # smooth terrain look spiky. Subsampling to roughly SURFACE_MESH_TARGET
-        # cells across keeps the mesh legible regardless of grid size; a
-        # SURFACE_MESH_TARGET of 50 leaves grids up to 50x50 (the size the
-        # surface styling was tuned against) completely unaffected.
-        rows, cols = terrain_coordinates.shape[:2]
-        stride = max(1, round(max(rows, cols) / SURFACE_MESH_TARGET))
-
-        # The mesh geometry (x, y, z) is smooth after max_gradient-limiting,
-        # so simple strided sampling loses no meaningful shape detail. The
-        # probability values are the opposite - sparse, isolated spikes - so
-        # they're downsampled with _max_pool_2d instead, and each face takes
-        # the max (not the average) of its 4 corners: averaging would dilute
-        # an isolated hotspot toward the background, and either approach
-        # could otherwise make a "close to maximum" cell render yellow-ish or
-        # not show up at all if a plain stride happened to skip it.
-        x = terrain_coordinates[::stride, ::stride, 0]
-        y = terrain_coordinates[::stride, ::stride, 1]
-        z = terrain_coordinates[::stride, ::stride, 2]
-        pooled_values = _max_pool_2d(values, stride)
-
-        # plot_surface connects every 4 neighboring cells into one quad face,
-        # so it needs one color per face rather than per cell. shade=False
-        # keeps that color exact instead of matplotlib's default lighting
-        # tint, which would distort the probability spectrum.
-        colormap = matplotlib.colormaps[PROBABILITY_COLORMAP]
-        face_values = np.maximum(
-            np.maximum(pooled_values[:-1, :-1], pooled_values[1:, :-1]),
-            np.maximum(pooled_values[:-1, 1:], pooled_values[1:, 1:]),
-        )
-        face_colors = colormap(norm(face_values))
-
-        axes.plot_surface(x, y, z, facecolors=face_colors, rstride=1, cstride=1, linewidth=0.2, edgecolor="dimgray", shade=False, zorder=1)
-
-        mappable = matplotlib.cm.ScalarMappable(norm=norm, cmap=colormap)
-        mappable.set_array(values)
-        figure.colorbar(mappable, ax=axes, label="Probability", shrink=0.6)
-
-        axes.set_title("Terrain with search probability")
-        axes.set_xlabel("x (m)")
-        axes.set_ylabel("y (m)")
-        axes.set_zlabel("z (m, altitude)")
-
-        # Now that the terrain is a solid surface rather than a wireframe, a
-        # path/marker drawn exactly at ground level gets partly hidden behind
-        # it - mplot3d doesn't z-sort separate artists perfectly, it only
-        # approximates depth per-artist. Forcing a high zorder on the
-        # path/markers - with a low zorder on the surface itself - is what
-        # actually guarantees mplot3d draws them on top, regardless of how
-        # small the height offset is; hover_height itself only needs to be
-        # just enough to read as "hovering above" rather than "painted onto"
-        # the ground, so it's kept small and close to the surface.
-        hover_height = max((z.max() - z.min()) * 0.03, 0.15)
-
-        legend_handles = []
-
-        if blocked_mask is not None:
-            legend_handles.append(self._draw_3d_blocked_mask(axes, blocked_mask, terrain_coordinates, hover_height))
-
-        if path:
-            legend_handles.extend(self._draw_3d_path(axes, path, terrain_coordinates, hover_height))
-
-        if legend_handles:
-            axes.legend(handles=legend_handles, loc="upper right")
+        _populate_3d_axes(figure, axes, values, norm, path, terrain_coordinates, blocked_mask)
 
         canvas.draw()
         return canvas
-
-
-    def _draw_3d_blocked_mask(self, axes, blocked_mask: np.ndarray, terrain_coordinates: np.ndarray, hover_height: float):
-        """
-        Marks every blocked_mask cell with a black X, hovering
-        hover_height above the terrain surface (see _build_3d_view for why
-        a height offset is needed at all) so it stays visible instead of
-        being drawn on/under the surface mesh. Returns the legend entry
-        for it.
-        """
-        blocked_x = terrain_coordinates[:, :, 0][blocked_mask]
-        blocked_y = terrain_coordinates[:, :, 1][blocked_mask]
-        blocked_z = terrain_coordinates[:, :, 2][blocked_mask] + hover_height
-
-        return axes.scatter(blocked_x, blocked_y, blocked_z, color="black", marker="x", s=80, linewidths=2, label=BLOCKED_LABEL, zorder=10)
-
-
-    def _draw_3d_path(self, axes, path: list, terrain_coordinates: np.ndarray, hover_height: float) -> list:
-        """
-        The 3D counterpart of _draw_2d_path: draws the path as a connected
-        line hovering hover_height above the terrain, plus a start marker,
-        an end marker at the true turnaround point (see _path_end_index),
-        sampled sequence-number labels (see _path_label_indices) and
-        sampled direction chevrons (see _direction_chevron_offsets, used
-        instead of matplotlib's own 3D arrowheads - see that function's
-        docstring for why). Returns the list of legend handles for
-        whichever of these were actually drawn.
-        """
-        path_x = [terrain_coordinates[row, col, 0] for row, col in path]
-        path_y = [terrain_coordinates[row, col, 1] for row, col in path]
-        path_z = [terrain_coordinates[row, col, 2] + hover_height for row, col in path]
-
-        path_line, = axes.plot(path_x, path_y, path_z, color="blue", linewidth=2.5, marker="o", markersize=4, label="path", zorder=11)
-
-        # A sampled subset of cells (see _path_label_indices/PATH_LABEL_
-        # COUNT) gets a bigger white-filled marker with a checkpoint number
-        # inside - numbering every single dot was tried first and looked
-        # fine on a short synthetic path, but overlapped into an unreadable
-        # solid blob on any real, hundreds-of-cells path from this
-        # project's algorithms. The number printed is this checkpoint's own
-        # 1-indexed position among the sampled subset (1, 2, 3, ...) - not
-        # its raw index in `path` - since with a stride skipping most cells,
-        # printing the raw path index would show large, unexplained gaps
-        # (e.g. 20, 40, 60, ...) instead of a simple visiting order.
-        label_indices = _path_label_indices(len(path))
-        if label_indices.size > 0:
-            label_x = np.asarray(path_x)[label_indices]
-            label_y = np.asarray(path_y)[label_indices]
-            label_z = np.asarray(path_z)[label_indices]
-            axes.scatter(
-                label_x, label_y, label_z, facecolors="white", edgecolors="blue", linewidths=1.1,
-                s=110, depthshade=False, zorder=13,
-            )
-            for label_number, (x, y, z) in enumerate(zip(label_x, label_y, label_z), start=1):
-                axes.text(x, y, z, str(label_number), ha="center", va="center", fontsize=6, color="blue", zorder=14)
-
-        # depthshade=False disables mplot3d's default distance-based alpha
-        # fade - without it, this single black star can fade into
-        # near-invisibility against the terrain depending on the current
-        # view/zoom, since there's no averaging with nearby points the way a
-        # dense scatter would have. magenta is used deliberately because it
-        # falls outside PROBABILITY_COLORMAP's red -> yellow -> green range
-        # entirely - a fill color pulled from inside that range (e.g.
-        # yellow) can blend right into terrain of a similar shade, and the
-        # background/default probability often lands close to yellow. The
-        # black edge adds definition against light terrain, and the bigger
-        # size makes it easier to spot at a glance.
-        start_marker = axes.scatter(
-            [path_x[0]], [path_y[0]], [path_z[0]],
-            color="magenta", marker="*", s=400, edgecolors="black", linewidths=1,
-            depthshade=False, label="start", zorder=20,
-        )
-
-        handles = [path_line, start_marker]
-        if label_indices.size > 0:
-            handles.append(Line2D([0], [0], marker="o", linestyle="None", markersize=8, markerfacecolor="white", markeredgecolor="blue", label="sequence #"))
-
-        # See _path_end_index - with a return leg, path[-1] is just the
-        # start cell again, so the real "end" worth marking is the
-        # turnaround point.
-        end_index = _path_end_index(path)
-        if end_index != 0:
-            end_marker = axes.scatter(
-                [path_x[end_index]], [path_y[end_index]], [path_z[end_index]],
-                color="red", marker="*", s=400, edgecolors="black", linewidths=1,
-                depthshade=False, label="end", zorder=20,
-            )
-            handles.append(end_marker)
-
-        arrow_indices = _path_arrow_indices(len(path))
-        if arrow_indices.size > 0:
-            for i in arrow_indices:
-                segment_dx = path_x[i + 1] - path_x[i]
-                segment_dy = path_y[i + 1] - path_y[i]
-                tip_x, tip_y, tip_z = path_x[i + 1], path_y[i + 1], path_z[i + 1]
-                # Wing length scales with this segment's own horizontal
-                # length (a fixed grid-step distance) rather than the
-                # plot's overall span, so chevrons stay a legible size
-                # regardless of how large the map is.
-                wing_length = np.hypot(segment_dx, segment_dy) * 0.6
-                for wing_dx, wing_dy in _direction_chevron_offsets(segment_dx, segment_dy, wing_length):
-                    axes.plot([tip_x, tip_x + wing_dx], [tip_y, tip_y + wing_dy], [tip_z, tip_z], color="black", linewidth=2, zorder=15)
-
-            handles.append(Line2D([0], [0], color="black", marker=">", linestyle="None", markersize=8, label="direction"))
-
-        return handles
 
 
 def launch_gui(
@@ -538,3 +570,44 @@ def launch_gui(
     )
     window.showMaximized()
     app.exec_()
+
+
+def save_trajectory_image(
+    coordinates_grid: CoordinatesGrid,
+    output_path,
+    path: list = None,
+    terrain_coordinates: np.ndarray = None,
+    blocked_mask: np.ndarray = None,
+) -> None:
+    """
+    Renders the same "2D grid" view TrajectoryVisualizerWindow shows
+    interactively - and, if terrain_coordinates is given, the same "3D
+    terrain" view side by side with it - into a single static image saved
+    to output_path. Uses matplotlib's plain Agg backend (FigureCanvasAgg)
+    directly rather than TrajectoryVisualizerWindow/FigureCanvasQTAgg, so
+    this needs no QApplication, no PyQt5 event loop, and no display server
+    at all - meant for batch/headless use (see helpers.benchmark.
+    run_benchmark, which calls this once per run to keep a visual record
+    of each algorithm's found path alongside its row in the results CSV).
+
+    Both halves are drawn by the exact same _populate_2d_axes/
+    _populate_3d_axes functions the interactive window uses, so a saved
+    image always looks identical to what that window would show for the
+    same inputs.
+    """
+    values = coordinates_grid.coordinates_values
+    norm = mcolors.Normalize(vmin=float(values.min()), vmax=float(values.max()))
+
+    if terrain_coordinates is not None:
+        figure = Figure(figsize=(20, 9))
+        axes_2d = figure.add_subplot(1, 2, 1)
+        axes_3d = figure.add_subplot(1, 2, 2, projection="3d")
+        _populate_3d_axes(figure, axes_3d, values, norm, path, terrain_coordinates, blocked_mask)
+    else:
+        figure = Figure(figsize=(10, 9))
+        axes_2d = figure.add_subplot(1, 1, 1)
+
+    _populate_2d_axes(figure, axes_2d, values, norm, path, blocked_mask)
+
+    canvas = FigureCanvasAgg(figure)
+    canvas.print_figure(output_path)
