@@ -210,12 +210,8 @@ def _build_grid(mission_data: dict, drone_params: dict, terrain_seed: int):
     regenerating it a second time.
     """
     rows, cols = mission_data["rows"], mission_data["cols"]
-    grid = CoordinatesGrid(
-        coordinates_values=np.ones((rows, cols)),
-        weights_grid=WeightsGrid(weights=np.ones((rows, cols, 8))),
-    )
-    grid.init_grids(rows, cols)
-    grid.set_searched_areas(mission_data["search_areas"])
+    grid = CoordinatesGrid(weights_grid=WeightsGrid())
+    grid.set_searched_area_values(rows, cols, mission_data["search_areas"])
 
     seed = terrain_seed if terrain_seed is not None else mission_data["terrain_seed"]
     terrain_coordinates = generate_random_terrain_coordinates(

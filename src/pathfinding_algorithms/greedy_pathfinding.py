@@ -244,7 +244,7 @@ def find_path_by_value_cost_ratio(
     1. Sort every cell in grid.coordinates_values from highest to lowest
        value (once, up front) - this is the same candidate ordering
        find_path_to_highest_value uses one at a time. Cells at or below
-       Constants.DEFAULT_PROBABILITY (CoordinatesGrid.init_empty_grid's
+       Constants.DEFAULT_PROBABILITY (CoordinatesGrid.set_searched_area_values's
        "no information yet" fill value) are never candidates - see
        _next_fresh_candidate - since this function is specifically about
        ranking targets by value, and an untouched background cell isn't a
@@ -357,7 +357,7 @@ def find_path_by_lowest_cost(
        value (once, up front) - purely to pick a consistent, deterministic
        set of candidates each round; value itself doesn't otherwise factor
        into the choice here. Cells at or below Constants.DEFAULT_PROBABILITY
-       (CoordinatesGrid.init_empty_grid's "no information yet" fill value)
+       (CoordinatesGrid.set_searched_area_values's "no information yet" fill value)
        are never candidates - see _next_fresh_candidate. Without this, a
        grid mostly filled with tied background cells would have this
        function spend nearly every round comparing meaningless candidates,
@@ -641,7 +641,7 @@ def _next_fresh_candidate(
     first) starting at candidate_pointer for the next cell that's neither
     already visited nor blocked - and whose value is above
     Constants.DEFAULT_PROBABILITY, the "no information yet" fill value
-    CoordinatesGrid.init_empty_grid gives every cell. Since these two
+    CoordinatesGrid.set_searched_area_values gives every cell. Since these two
     functions specifically reason about value (a ratio to cost, or picking
     the cheapest among value-ranked candidates), an untouched background
     cell isn't a meaningful target - including it just means comparing

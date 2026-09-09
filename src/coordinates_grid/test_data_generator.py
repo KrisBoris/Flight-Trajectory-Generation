@@ -11,7 +11,7 @@ def generate_random_positions(coordinates_grid: CoordinatesGrid, amount: int) ->
     coordinates_grid, each paired with a random probability of finding the
     searched person there, in [0.0, Constants.MAX_PROBABILITY].
     Returned as a list of (3,) float arrays (row, col, probability) - the
-    same layout CoordinatesGrid.set_searched_areas expects.
+    same layout CoordinatesGrid.set_searched_area_values expects.
     """
     total_cells = coordinates_grid.rows * coordinates_grid.cols
 
@@ -213,7 +213,7 @@ def build_blocked_mask(rows: int, cols: int, blocked_cells: list) -> np.ndarray:
     no-fly layout is wanted again instead of a fixed, scenario-defined one.
 
     A cell outside the grid is skipped rather than raising - the same
-    tolerance CoordinatesGrid.set_searched_areas gives an out-of-range
+    tolerance CoordinatesGrid.set_searched_area_values gives an out-of-range
     coordinate - since a scenario file authored for one grid size should not
     hard-crash if reused with a smaller one.
     """

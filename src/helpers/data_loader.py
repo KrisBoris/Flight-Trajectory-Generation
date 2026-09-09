@@ -69,7 +69,7 @@ def load_mission_data(file_path) -> dict:
         "terrain_seed": int,
         "start_row": int, "start_col": int,
         "search_areas": list of (3,) float ndarrays (row, col, probability) -
-          the same layout CoordinatesGrid.set_searched_areas expects.
+          the same layout CoordinatesGrid.set_searched_area_values expects.
         "blocked_cells": list of (row, col) int tuples - the same layout
           coordinates_grid.test_data_generator.build_blocked_mask expects.
       }

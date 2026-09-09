@@ -1,4 +1,4 @@
-# main.py
+from pathlib import Path
 
 from coordinates_grid.coordinates_grid import CoordinatesGrid
 from coordinates_grid.weights_grid import WeightsGrid
@@ -6,11 +6,9 @@ from coordinates_grid.test_data_generator import (
     generate_random_terrain_coordinates,
     build_blocked_mask,
 )
+from pathfinding_algorithms.trajectory_generator import TrajectoryGenerator
 from helpers.data_loader import load_mission_data, load_drone_params
 from gui.visualizer import launch_gui
-from pathlib import Path
-from pathfinding_algorithms.trajectory_generator import TrajectoryGenerator
-import numpy as np
 
 
 MISSION_DATA_FILE_NAME = "scenario2.json"
@@ -22,23 +20,20 @@ DRONE_PARAMS_DATA = Path(__file__).resolve().parent.parent / "drone_data" / DRON
 
 def main():
     """
-    End-to-end demo run: loads a scenario/drone config, builds the
-    CoordinatesGrid and its terrain-derived WeightsGrid, runs
-    TrajectoryGenerator with the "grasp" algorithm from the mission's start
-    cell, prints a one-line summary, then opens the GUI to visualize the
+    Loads a scenario/drone config, builds the CoordinatesGrid 
+    and its terrain-derived WeightsGrid, runs TrajectoryGenerator 
+    with the chosen algorithm from the mission's start cell, 
+    prints a one-line summary, then opens the GUI to visualize the
     resulting path.
     """
+
     mission_data = load_mission_data(MISSION_DATA)
     drone_params = load_drone_params(DRONE_PARAMS_DATA)
+
     rows, cols = mission_data["rows"], mission_data["cols"]
 
-    coordinates_grid = CoordinatesGrid(
-        coordinates_values=np.ones((rows, cols)),
-        weights_grid=WeightsGrid(weights=np.ones((rows, cols, 8))),
-    )
-    coordinates_grid.init_grids(rows, cols)
-
-    coordinates_grid.set_searched_areas(mission_data["search_areas"])
+    coordinates_grid = CoordinatesGrid(weights_grid=WeightsGrid())
+    coordinates_grid.set_searched_area_values(rows, cols, mission_data["search_areas"])
 
     terrain_coordinates = generate_random_terrain_coordinates(
         rows,
@@ -48,7 +43,8 @@ def main():
         max_gradient=mission_data["max_gradient"],
         seed=mission_data["terrain_seed"],
     )
-    coordinates_grid.weights_grid.init_from_elevation(
+
+    coordinates_grid.set_searched_area_cost(
         terrain_coordinates,
         climb_cost_per_meter=drone_params["climb_cost_per_meter"],
         descent_cost_per_meter=drone_params["descent_cost_per_meter"],
