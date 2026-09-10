@@ -201,7 +201,7 @@ def generate_random_blocked_mask(coordinates_grid: CoordinatesGrid, blocked_shap
     return mask
 
 
-def build_blocked_mask(rows: int, cols: int, blocked_cells: list) -> np.ndarray:
+def build_blocked_terrain(rows: int, cols: int, blocked_cells: list) -> np.ndarray:
     """
     Boolean blocked_mask (see TrajectoryGenerator's blocked_mask parameter)
     built from a FIXED list of (row, col) no-fly cells - e.g. loaded from a

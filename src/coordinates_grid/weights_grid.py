@@ -11,12 +11,7 @@ class WeightsGrid():
     direction, stored as a rows x cols x 8 array.
     """
 
-    # No default grid size/fill is set up front - a WeightsGrid is only ever
-    # meaningfully populated by init_from_elevation, which derives rows/cols
-    # from the terrain coordinates it's given and (re)builds `weights` from
-    # scratch - so `weights` starts as None until that call, rather than
-    # being wastefully filled (e.g. with np.ones) just to be immediately
-    # overwritten.
+    # Grid (x, y, 8) holding the costs of traveling between each connected node
     weights: np.ndarray = None
 
 
@@ -24,8 +19,7 @@ class WeightsGrid():
         """
         Runs right after the dataclass's generated __init__. If weights was
         given directly, coerces it to a 3D float64 numpy array (raising
-        ValueError if it isn't 3D) - otherwise leaves it as None, to be
-        built by init_from_elevation.
+        ValueError if it isn't 3D) - otherwise leaves it as None.
         """
         if self.weights is None:
             return
@@ -49,10 +43,7 @@ class WeightsGrid():
     ) -> bool:
         """
         Populates weights from each cell's real-world local coordinates
-        (a rows x cols x 3 array of (x, y, z) in meters - see
-        test_data_generator.generate_random_terrain_coordinates - where the
-        grid's bottom-left cell sits at x = y = 0 and z is altitude above sea
-        level) instead of a flat direction guess.
+        (a rows x cols x 3 array of (x, y, z) in meters.
 
         For every cell and direction, cost has two parts:
           - a travel cost of base_cost per meter of actual horizontal
@@ -63,10 +54,6 @@ class WeightsGrid():
             horizontal_distance). This grows quickly for a steep, short hop
             and shrinks for the same altitude change spread over a longer,
             gentler run, rewarding gradual climbs/descents over abrupt ones.
-        Climbing adds climb_cost_per_meter * grade_penalty; descending
-        subtracts descent_cost_per_meter * grade_penalty (floored at
-        0.1 * travel_cost so a long, gentle descent is discounted but never
-        made absurdly - or negatively - cheap).
         """
         if coordinates.ndim != 3 or coordinates.shape[2] != 3:
             print(f"Coordinates matrix must be a (rows, cols, 3) array of (x, y, z), not {coordinates.shape}")
@@ -90,11 +77,11 @@ class WeightsGrid():
                     horizontal_distance = float(np.hypot(x1 - x0, y1 - y0))
                     elevation_change = z1 - z0
                     travel_cost = base_cost * horizontal_distance
-                    grade_penalty = (elevation_change ** 2) / horizontal_distance if horizontal_distance > 0 else 0.0
+                    climb_cost = (elevation_change ** 2) / horizontal_distance if horizontal_distance > 0 else 0.0
 
                     if elevation_change > 0:
-                        self.weights[row, col, direction] = travel_cost + climb_cost_per_meter * grade_penalty
+                        self.weights[row, col, direction] = travel_cost + climb_cost_per_meter * climb_cost
                     else:
-                        self.weights[row, col, direction] = max(0.8 * travel_cost, travel_cost - descent_cost_per_meter * grade_penalty)
+                        self.weights[row, col, direction] = max(0.8 * travel_cost, travel_cost - descent_cost_per_meter * climb_cost)
 
         return True

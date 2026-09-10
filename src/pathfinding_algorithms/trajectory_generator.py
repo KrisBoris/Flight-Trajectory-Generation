@@ -1,5 +1,3 @@
-# trajectory_generator.py
-
 from coordinates_grid.coordinates_grid import CoordinatesGrid
 from dataclasses import dataclass
 from pathfinding_algorithms import greedy_pathfinding, metaheuristic_pathfinding, astar_pathfinding, exact_pathfinding
@@ -14,8 +12,8 @@ import numpy as np
 # algorithm by writing such a module next to greedy_pathfinding.py and
 # registering its function here.
 PATHFINDING_ALGORITHMS = {
-    "greedy": greedy_pathfinding.find_path_for_highest_neighbor_value,
-    "direct_to_highest_value": greedy_pathfinding.find_path_to_highest_value,
+    "greedy": greedy_pathfinding.find_path_to_highest_value_neighbor,
+    "direct_to_highest_value": greedy_pathfinding.find_path_by_highest_value,
     "value_cost_ratio": greedy_pathfinding.find_path_by_value_cost_ratio,
     "lowest_cost": greedy_pathfinding.find_path_by_lowest_cost,
     "ant_colony": metaheuristic_pathfinding.find_path_by_ant_colony,

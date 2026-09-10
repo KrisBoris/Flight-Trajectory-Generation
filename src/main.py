@@ -4,7 +4,7 @@ from coordinates_grid.coordinates_grid import CoordinatesGrid
 from coordinates_grid.weights_grid import WeightsGrid
 from coordinates_grid.test_data_generator import (
     generate_random_terrain_coordinates,
-    build_blocked_mask,
+    build_blocked_terrain,
 )
 from pathfinding_algorithms.trajectory_generator import TrajectoryGenerator
 from helpers.data_loader import load_mission_data, load_drone_params
@@ -32,7 +32,7 @@ def main():
 
     rows, cols = mission_data["rows"], mission_data["cols"]
 
-    coordinates_grid = CoordinatesGrid(weights_grid=WeightsGrid())
+    coordinates_grid = CoordinatesGrid()
     coordinates_grid.set_searched_area_values(rows, cols, mission_data["search_areas"])
 
     terrain_coordinates = generate_random_terrain_coordinates(
@@ -51,23 +51,23 @@ def main():
         base_cost=drone_params["base_cost"],
     )
 
-    blocked_mask = build_blocked_mask(rows, cols, mission_data["blocked_cells"])
+    blocked_terrain = build_blocked_terrain(rows, cols, mission_data["blocked_cells"])
+    
+    trajectory_generator = TrajectoryGenerator(grid=coordinates_grid)
 
     #     PATHFINDING_ALGORITHMS = {
     #     "greedy": greedy_pathfinding.find_path_for_highest_neighbor_value,
     #     "direct_to_highest_value": greedy_pathfinding.find_path_to_highest_value,
     #     "value_cost_ratio": greedy_pathfinding.find_path_by_value_cost_ratio,
-    #     "lowest_cost": greedy_pathfinding.find_path_by_lowest_cost,
-    #     "ant_colony": metaheuristic_pathfinding.find_path_by_ant_colony,
+    #     "lowest_cost": greedy_pathfinding.find_path_by_lowest_cost
     # }
-    trajectory_generator = TrajectoryGenerator(grid=coordinates_grid)
     path, total_value, cost_used = trajectory_generator.find_best_path(
         start_row=mission_data["start_row"],
         start_col=mission_data["start_col"],
         max_cost=drone_params["max_cost"],
         require_return_to_base=drone_params["require_return_to_base"],
-        blocked_mask=blocked_mask,
-        algorithm="grasp"
+        blocked_mask=blocked_terrain,
+        algorithm="lowest_cost"
     )
 
     print(f"Best path found: {len(path)} steps, total value {total_value:.2f}, cost used {cost_used:.2f}")
@@ -76,7 +76,7 @@ def main():
         coordinates_grid,
         path=path,
         terrain_coordinates=terrain_coordinates,
-        blocked_mask=blocked_mask,
+        blocked_mask=blocked_terrain,
     )
 
 

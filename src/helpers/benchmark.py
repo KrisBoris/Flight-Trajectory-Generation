@@ -2,7 +2,7 @@
 
 from coordinates_grid.coordinates_grid import CoordinatesGrid
 from coordinates_grid.weights_grid import WeightsGrid
-from coordinates_grid.test_data_generator import generate_random_terrain_coordinates, build_blocked_mask
+from coordinates_grid.test_data_generator import generate_random_terrain_coordinates, build_blocked_terrain
 from gui.visualizer import save_trajectory_image
 from helpers.data_loader import load_mission_data, load_drone_params
 from pathfinding_algorithms.trajectory_generator import TrajectoryGenerator, PATHFINDING_ALGORITHMS
@@ -229,7 +229,7 @@ def _build_grid(mission_data: dict, drone_params: dict, terrain_seed: int):
         base_cost=drone_params["base_cost"],
     )
 
-    blocked_mask = build_blocked_mask(rows, cols, mission_data["blocked_cells"])
+    blocked_mask = build_blocked_terrain(rows, cols, mission_data["blocked_cells"])
 
     return grid, blocked_mask, terrain_coordinates
 

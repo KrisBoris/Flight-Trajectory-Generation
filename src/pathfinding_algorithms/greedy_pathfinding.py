@@ -1,39 +1,29 @@
-# greedy_pathfinding.py
-
 from coordinates_grid.coordinates_grid import CoordinatesGrid
 from helpers.constants import Constants
 import numpy as np
 
 
-def find_path_for_highest_neighbor_value(
+def find_path_to_highest_value_neighbor(
     grid: CoordinatesGrid,
     start_row: int,
     start_col: int,
     max_cost: float,
     require_return_to_base: bool = True,
-    blocked_mask: np.ndarray = None,
+    blocked_terrain: np.ndarray = None,
 ) -> tuple[list[tuple[int, int]], float, float]:
     """
-    Greedy search: starting at (start_row, start_col), repeatedly steps to
-    the highest-value reachable neighbor until no move is left that fits the
-    remaining budget. An already-visited neighbor is never preferred over an
-    unvisited one - revisiting adds no new value, so its value is only
-    counted once, the first time - but it's allowed as a fallback move when
-    every unvisited neighbor is off-grid, blocked or unaffordable. Without
-    that fallback, the drone can back itself into a pocket entirely
-    surrounded by ground it's already covered and stop there with budget
-    left unspent, even though stepping back through already-visited cells
-    could still reach fresh territory beyond them. See
-    TrajectoryGenerator.find_best_path, which calls this from the mission's
-    fixed starting cell.
+    Greedy search (one-step-lookahead greedy heuristic): starting at 
+    (start_row, start_col), repeatedly steps to the highest-value 
+    reachable neighbor until no move is left that fits the remaining budget. 
+    An already-visited neighbor is never preferred over an unvisited one - 
+    revisiting adds no new value, so its value is only counted once, the 
+    first time - but it's allowed as a fallback move when every unvisited 
+    neighbor is off-grid, blocked or unaffordable.    
 
-    This is still a one-step-lookahead greedy heuristic, not a full search -
-    in a pocket where every way out requires several revisit-only hops, it
-    has no way to plan the escape route in advance, so it could in principle
-    wander through already-visited ground for a while before finding new
-    territory (or run out of budget first). It will never stop early with
-    budget left over just because the immediate neighbors are all visited,
-    though - it always keeps moving until truly no affordable move exists.
+    Returns:
+        Found path build of sequence of visited cells (x, y): list[tuple[int, int]]
+        Total value collected from visited cells: float
+        Total cost of traveling through found path: float        
     """
     rows, cols = grid.rows, grid.cols
     weights = grid.weights_grid.weights
@@ -48,10 +38,9 @@ def find_path_for_highest_neighbor_value(
     remaining_budget = max_cost
     row, col = start_row, start_col
 
-    # return_cost_grid[r, c] is the cost of the shortest route (see
-    # _build_return_cost_grid) from (r, c) back to base - looked up, not
-    # recomputed, at every candidate move below.
-    return_cost_grid = _build_return_cost_grid(grid, start_row, start_col, blocked_mask, max_steps) if require_return_to_base else None
+    # return_cost_grid[r, c] is the cost of the shortest route from (r, c) back to base -
+    # calculated once for each node
+    return_cost_grid = _build_return_cost_grid(grid, start_row, start_col, blocked_terrain, max_steps) if require_return_to_base else None
 
     while True:
         best_value = None
@@ -63,37 +52,27 @@ def find_path_for_highest_neighbor_value(
 
             if next_row < 0 or next_row >= rows or next_col < 0 or next_col >= cols:
                 continue
-            # A no-fly cell (storm cell, restricted airspace, terrain the
-            # drone can't overfly) is removed from consideration outright,
-            # regardless of how cheap it would otherwise be to reach.
-            if blocked_mask is not None and blocked_mask[next_row, next_col]:
+
+            if blocked_terrain is not None and blocked_terrain[next_row, next_col]:
                 continue
 
-            # weights already encodes real per-direction cost (e.g. climb vs
-            # descent, from WeightsGrid.init_from_elevation) - no flat,
-            # compass-direction-only multiplier on top, since grid-compass
-            # direction ("up" = north on the grid) has no fixed relationship
-            # to real elevation change, and stacking one on would fight the
-            # real terrain-based cost instead of reflecting it.
             cost = weights[row, col, direction]
 
-            # The budget must cover this move AND the shortest route home
-            # from wherever it would land. Otherwise the drone could strand
-            # itself past the point of no return.
+            # The budget must cover this move + the shortest route home
             return_reserve = return_cost_grid[next_row, next_col] if return_cost_grid is not None else 0.0
             if cost + return_reserve > remaining_budget:
                 continue
 
             already_visited = visited[next_row, next_col]
-            # Revisiting adds no new value, so it's ranked below every
-            # unvisited option regardless of that cell's own value - it's
-            # only ever chosen when nothing unvisited is reachable at all.
-            value = -np.inf if already_visited else values[next_row, next_col]
 
-            # Prefer strictly higher value; among equal values (including
-            # ties between revisits), prefer the cheaper move.
-            if best_value is None or value > best_value or (value == best_value and cost < best_move[2]):
-                best_value = value
+            # Revisiting adds no new value - it's only ever 
+            # chosen when nothing unvisited is reachable at all.
+            new_value = -np.inf if already_visited else values[next_row, next_col]
+
+            # Prefers strictly higher value; among equal values (including
+            # ties between revisits), prefers the cheaper move.
+            if best_value is None or new_value > best_value or (new_value == best_value and cost < best_move[2]):
+                best_value = new_value
                 best_move = (next_row, next_col, cost, already_visited)
 
         if best_move is None:
@@ -110,12 +89,9 @@ def find_path_for_highest_neighbor_value(
     if not require_return_to_base:
         return path, total_value, max_cost - remaining_budget
 
-    # Fly the actual shortest route home (see _walk_toward_target) rather
-    # than retracing the outbound path - the invariant enforced above
-    # (return_cost_grid[cell] <= remaining_budget after every accepted move)
-    # guarantees this fits.
+    # Fly the shortest route home
     _, return_path_cells, return_cost, return_value_gained = _walk_toward_target(
-        grid, row, col, start_row, start_col, remaining_budget, None, blocked_mask, visited, max_steps,
+        grid, row, col, start_row, start_col, remaining_budget, None, blocked_terrain, visited, max_steps,
     )
     path_with_return = path + return_path_cells
     total_value += return_value_gained
@@ -124,49 +100,23 @@ def find_path_for_highest_neighbor_value(
     return path_with_return, total_value, total_cost_used
 
 
-def find_path_to_highest_value(
+def find_path_by_highest_value(
     grid: CoordinatesGrid,
     start_row: int,
     start_col: int,
     max_cost: float,
     require_return_to_base: bool = True,
-    blocked_mask: np.ndarray = None,
+    blocked_terrain: np.ndarray = None,
 ) -> tuple[list[tuple[int, int]], float, float]:
     """
-    1. Find the highest-value unvisited, unblocked, real cell (value above
-       Constants.DEFAULT_PROBABILITY - see STOPPING ON BACKGROUND CELLS) in
-       grid.coordinates_values.
-    2. Walk toward it (see _walk_toward_target: shortest path, rotating
-       around obstacles one cell at a time), cost-checked the same way as
-       find_path_for_highest_neighbor_value, including the
-       require_return_to_base reserve.
-    3. If reached, commit the walk (every cell passed through is added to
+    1. Find a node with the highest-value, unvisited, unblocked, with 
+       value above Constants.DEFAULT_PROBABILITY.
+    2. Calculate the cost of traveling to it using the shortest path
+       possible - straightforward with collision avoidance.
+    3. If reachedable, travel to it (every cell passed through is added to
        the path). Repeat from step 1.
     4. The algorithm stops the moment a target can't be fully reached -
-       boxed in, or unaffordable - there is no fallback to a lesser target.
-
-    Rotating around one obstacle cell at a time is a simple heuristic, not a
-    full pathfinding search - it can fail to find a way around a large or
-    maze-like blocked_mask even when one exists, unlike
-    find_path_for_highest_neighbor_value.
-
-    STOPPING ON BACKGROUND CELLS
-    -------------------------------
-    Step 1 only ever considers a cell whose value is above Constants.
-    DEFAULT_PROBABILITY - the same "is this a real signal or just
-    unexplored background" floor _next_fresh_candidate applies for
-    find_path_by_value_cost_ratio/find_path_by_lowest_cost. Without it,
-    once every real target has been visited, step 1 would fall back to
-    picking among every remaining background cell - all tied at exactly
-    the same value - and np.argmax's tie-break (the first cell in
-    row-major order) is not cost-aware at all, so this would walk toward
-    an essentially arbitrary, potentially expensive cell for zero
-    additional value rather than stopping. Unlike find_path_for_highest_
-    neighbor_value (which intentionally keeps moving through background
-    territory until the budget itself runs out - see that function's own
-    docstring), this function actively SEEKS a specific target each round,
-    and once no real target is left worth seeking, continuing serves no
-    purpose.
+       boxed in, or unaffordable - there is no fallback to a lesser target.    
     """
     rows, cols = grid.rows, grid.cols
     values = grid.coordinates_values
@@ -178,9 +128,11 @@ def find_path_to_highest_value(
     total_value = values[start_row, start_col]
     remaining_budget = max_cost
     row, col = start_row, start_col
-
     max_steps = 8 * (rows + cols)
-    return_cost_grid = _build_return_cost_grid(grid, start_row, start_col, blocked_mask, max_steps) if require_return_to_base else None
+
+    # return_cost_grid[r, c] is the cost of the shortest route from (r, c) back to base -
+    # calculated once for each node
+    return_cost_grid = _build_return_cost_grid(grid, start_row, start_col, blocked_terrain, max_steps) if require_return_to_base else None
 
     while True:
         # 1. Find the highest-value unvisited, unblocked, real cell - see
@@ -189,7 +141,7 @@ def find_path_to_highest_value(
         # np.argmax's tie-break (the first cell in row-major order) among
         # every remaining background cell, all tied at the same value - an
         # arbitrary, cost-blind detour rather than stopping.
-        unavailable = visited if blocked_mask is None else visited | blocked_mask
+        unavailable = visited if blocked_terrain is None else visited | blocked_terrain
         candidate_values = np.where(unavailable | (values <= Constants.DEFAULT_PROBABILITY), -np.inf, values)
         if not np.isfinite(candidate_values).any():
             break
@@ -198,7 +150,7 @@ def find_path_to_highest_value(
 
         # 2-4. Walk toward it; stop entirely if it can't be reached.
         reached, path_cells, cost, value_gained = _walk_toward_target(
-            grid, row, col, target_row, target_col, remaining_budget, return_cost_grid, blocked_mask, visited, max_steps,
+            grid, row, col, target_row, target_col, remaining_budget, return_cost_grid, blocked_terrain, visited, max_steps,
         )
 
         if not reached:
@@ -219,7 +171,7 @@ def find_path_to_highest_value(
     # path - see find_path_for_highest_neighbor_value for why this is
     # guaranteed to fit the remaining budget.
     _, return_path_cells, return_cost, return_value_gained = _walk_toward_target(
-        grid, row, col, start_row, start_col, remaining_budget, None, blocked_mask, visited, max_steps,
+        grid, row, col, start_row, start_col, remaining_budget, None, blocked_terrain, visited, max_steps,
     )
     path_with_return = path + return_path_cells
     total_value += return_value_gained
@@ -238,40 +190,24 @@ def find_path_by_value_cost_ratio(
 ) -> tuple[list[tuple[int, int]], float, float]:
     """
     A tournament between candidate targets, picking whichever gives the
-    better value-collected/cost ratio rather than always the raw highest
-    value:
+    better value-collected/cost ratio.
 
-    1. Sort every cell in grid.coordinates_values from highest to lowest
-       value (once, up front) - this is the same candidate ordering
-       find_path_to_highest_value uses one at a time. Cells at or below
-       Constants.DEFAULT_PROBABILITY (CoordinatesGrid.set_searched_area_values's
-       "no information yet" fill value) are never candidates - see
-       _next_fresh_candidate - since this function is specifically about
-       ranking targets by value, and an untouched background cell isn't a
-       real one.
+    1. Sort every cell in grid.coordinates_values from highest to lowest value. 
+       Cells at or below Constants.DEFAULT_PROBABILITY are never candidates.
     2. Take the first CANDIDATES_PER_ROUND not-yet-visited, unblocked cells
-       from that sorted order. For each, walk to it (see
-       _walk_toward_target: shortest path, rotating around obstacles - the
-       same approach find_path_to_highest_value uses) and compute
-       value_collected / cost for that walk. A candidate that can't be
+       from that sorted order. For each, calculate the cost of traveling to it
+       using the shortest path possible - straightforward with collision avoidance.
+       Then compute value_collected / cost for that travel. A candidate that can't be
        reached at all (boxed in or unaffordable) is dropped outright rather
-       than kept for a rematch, since positions only move forward and
-       budget only shrinks.
-    3. Commit the walk with the best ratio among the reachable candidates.
-       The rest of the reachable-but-not-chosen candidates are kept and
-       re-challenged next round, topped back up to CANDIDATES_PER_ROUND with
-       fresh candidates from the sorted order - e.g. with
-       CANDIDATES_PER_ROUND = 2, if the 2nd-highest value won round 1, round
-       2 compares the 1st-highest (the round-1 loser) against the 3rd-
-       highest.
+       than kept for a rematch.
+    3. Travel to it candidate with the best ratio among the reachable candidates
+       (every cell passed through is added to the path). The rest of the reachable-but-not-chosen
+       candidates are kept and re-challenged next round.
     4. Repeat from step 2 until none of the round's candidates (held-over or
        fresh) can be reached - the algorithm stops there, with no fallback
        to a lesser target.
     """
-    # How many candidates are compared each round. 2 reproduces the simplest
-    # "compare this one against the next one" tournament; a higher number
-    # widens each round's search at the cost of more speculative walks per
-    # round (see _evaluate_candidate).
+    # How many candidates are compared each round
     CANDIDATES_PER_ROUND = 2
 
     rows, cols = grid.rows, grid.cols
@@ -349,9 +285,7 @@ def find_path_by_lowest_cost(
     blocked_mask: np.ndarray = None,
 ) -> tuple[list[tuple[int, int]], float, float]:
     """
-    The same tournament structure as find_path_by_value_cost_ratio, but
-    picking whichever candidate is cheapest to reach rather than whichever
-    has the best value/cost ratio:
+    A tournament between candidate targets, picking whichever gives the lowest cost.
 
     1. Sort every cell in grid.coordinates_values from highest to lowest
        value (once, up front) - purely to pick a consistent, deterministic
@@ -381,8 +315,7 @@ def find_path_by_lowest_cost(
        fresh) can be reached within the remaining budget - the algorithm
        stops there, with no fallback to a lesser target.
     """
-    # How many candidates are compared each round - see
-    # find_path_by_value_cost_ratio's CANDIDATES_PER_ROUND for the tradeoff.
+    # How many candidates are compared each round
     CANDIDATES_PER_ROUND = 50
 
     rows, cols = grid.rows, grid.cols

@@ -13,23 +13,19 @@ class CoordinatesGrid():
     cost between neighboring cells.
     """
 
-    weights_grid: WeightsGrid
+    # Grid holding the costs of traveling between each connected node
+    weights_grid: WeightsGrid = None
 
-    # No default grid size/fill is set up front - coordinates_values is only
-    # ever meaningfully populated by set_searched_area_values, which derives rows/
-    # cols from the size it's given and (re)builds coordinates_values from
-    # scratch - so this starts as None until that call, rather than being
-    # wastefully filled (e.g. with np.ones) just to be immediately
-    # overwritten.
+    # Value (probability of finding searched person) of each node
     coordinates_values: np.ndarray = None
 
 
     def __post_init__(self):
         """
         Runs right after the dataclass's generated __init__. If
-        coordinates_values was given directly, coerces it to a 2D float64
+        coordinates_values was given directly, converts it to a 2D float64
         numpy array (raising ValueError if it isn't 2D) - otherwise leaves
-        it as None, to be built by set_searched_area_values.
+        it as None.
         """
         if self.coordinates_values is None:
             return
@@ -46,30 +42,21 @@ class CoordinatesGrid():
 
     @property
     def rows(self):
-        """Number of rows in the grid, read from coordinates_values' own shape."""
+        """Number of rows in the grid, read from coordinates_values' own shape"""
         return self.coordinates_values.shape[0]
 
 
     @property
     def cols(self):
-        """Number of columns in the grid, read from coordinates_values' own shape."""
+        """Number of columns in the grid, read from coordinates_values' own shape"""
         return self.coordinates_values.shape[1]    
 
 
     def set_searched_area_values(self, x: int, y: int, areas_coords: list) -> bool:
         """
-        (Re)initializes coordinates_values as an x by y grid, every cell
-        starting at Constants.DEFAULT_PROBABILITY - i.e. "no information
-        yet", not a genuine signal - then writes each (row, col,
-        probability) entry in areas_coords on top of it, clamping
-        probability to at most Constants.MAX_PROBABILITY. Returns False
-        (and prints a message, leaving coordinates_values untouched) if x
-        or y isn't positive, or if an entry has the wrong shape/dtype; an
-        individual entry whose row/col falls outside the grid, or whose
-        probability is negative, is silently skipped instead - the same
-        tolerance build_blocked_mask gives an out-of-range blocked cell -
-        so a scenario file authored for one grid size doesn't hard-crash
-        if reused with a smaller one.
+        Initializes coordinates_values as an x by y grid, every cell
+        starting at Constants.DEFAULT_PROBABILITY, then writes each (row, col,
+        probability) entry in areas_coords on top of it
         """
         if x <= 0 or y <= 0:
             print(f"Grid size must be greater than zero, not {x}x{y}")
@@ -112,14 +99,12 @@ class CoordinatesGrid():
         base_cost: float = 1.0,
     ) -> bool:
         """
-        Thin wrapper around weights_grid.init_from_elevation - see that
-        method's docstring for how the cost model itself works. Lets a
-        caller populate this grid's movement costs via the CoordinatesGrid
-        directly, without reaching into its nested weights_grid. Returns
-        False without doing anything if weights_grid itself is missing.
+        Calls WeightsGrid method that calculates the
+        costs of traveling between each connected node
+        based on terrain elevation
         """
         if self.weights_grid is None:
-            return False
+            self.weights_grid = WeightsGrid()
         
         return self.weights_grid.init_from_elevation(
             coordinates,
