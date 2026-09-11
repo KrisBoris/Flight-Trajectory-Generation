@@ -134,7 +134,7 @@ def run_benchmark(
                 start_time = time.time()
 
                 try:
-                    path, total_value, cost_used = trajectory_generator.find_best_path(
+                    path, total_value, cost_used, persons_found = trajectory_generator.find_best_path(
                         start_row=mission_data["start_row"],
                         start_col=mission_data["start_col"],
                         max_cost=drone_params["max_cost"],
@@ -146,7 +146,6 @@ def run_benchmark(
                     elapsed_seconds = time.time() - start_time
                     path_cells = set(path)
                     targets_hit = sum(1 for cell in targets if cell in path_cells)
-                    persons_found = sum(1 for cell in actual_person_locations if cell in path_cells)
                     budget_used_pct = 100 * cost_used / drone_params["max_cost"] if drone_params["max_cost"] > 0 else 0.0
 
                     if save_images:

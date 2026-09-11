@@ -74,22 +74,43 @@ def _path_end_index(path: list) -> int:
     """
     Index of the point actually worth marking as "the end" of the path - not
     necessarily path[-1]: every pathfinding algorithm appends a return leg
-    (path + path[-2::-1]) when require_return_to_base is set, which makes
-    path[-1] just the start cell again. Marking that would sit exactly on
-    top of the start marker and show nothing new, so what's actually useful
-    is the turnaround point - the farthest cell the drone reached before
-    heading back.
+    when require_return_to_base is set, which makes path[-1] just the start
+    cell again. Marking that would sit exactly on top of the start marker
+    and show nothing new, so what's actually useful is the turnaround
+    point - the cell farthest (by Chebyshev distance) from the start that
+    the drone reached before heading back; among ties, the latest one in
+    visiting order, since an earlier visit to that same distance wasn't yet
+    the final turnaround.
 
-    A return-trip path is always a palindrome (the outbound cells, then the
-    same cells reversed), so its center index is that turnaround point.
+    This is NOT the path's midpoint: the return leg is a fresh, direct walk
+    home from wherever the drone happened to end up (see
+    greedy_pathfinding._walk_toward_target and pathfinding_algorithms.
+    trajectory_generator._stop_once_everyone_found), not a mirror of
+    however long or wandering the outbound portion was - a tour that visits
+    many targets before a short direct trip home (exactly what happens once
+    actual_person_locations lets a run stop early - see TrajectoryGenerator.
+    find_best_path) can have an outbound leg many times longer than its
+    return leg, so len(path) // 2 lands well short of the genuine
+    turnaround, on some arbitrary mid-tour cell instead.
+
     Detected here via path[0] == path[-1] (with no return leg, the path
-    isn't generally a palindrome, so path[-1] is already the genuine
+    isn't generally back at the start, so path[-1] is already the genuine
     endpoint) rather than threading a require_return_to_base flag through
     the whole call chain just for this.
     """
-    if len(path) > 1 and path[0] == path[-1]:
-        return len(path) // 2
-    return len(path) - 1
+    if len(path) <= 1 or path[0] != path[-1]:
+        return len(path) - 1
+
+    start_row, start_col = path[0]
+    farthest_index = 0
+    farthest_distance = -1
+    for index, (row, col) in enumerate(path):
+        distance = max(abs(row - start_row), abs(col - start_col))
+        if distance >= farthest_distance:
+            farthest_distance = distance
+            farthest_index = index
+
+    return farthest_index
 
 
 def _path_arrow_indices(path_length: int) -> np.ndarray:

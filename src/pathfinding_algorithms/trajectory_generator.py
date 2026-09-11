@@ -54,11 +54,12 @@ class TrajectoryGenerator():
         blocked_mask: np.ndarray = None,
         algorithm: str = "greedy",
         actual_person_locations: list = None,
-    ) -> tuple[list[tuple[int, int]], float, float]:
+    ) -> tuple[list[tuple[int, int]], float, float, int]:
         """
         Runs the selected pathfinding algorithm (a key in
         PATHFINDING_ALGORITHMS) from (start_row, start_col) and returns its
-        path, total collected value, and cost used.
+        path, total collected value, cost used, and how many of
+        actual_person_locations that path actually reached.
 
         actual_person_locations (optional) is the mission's ground-truth
         list of where the searched person(s) actually are - see
@@ -68,26 +69,27 @@ class TrajectoryGenerator():
         see _stop_once_everyone_found for the additional, uniform stopping
         rule this adds on top of whichever algorithm was selected. Left as
         None (the default), every algorithm runs exactly as it did before
-        this parameter existed.
+        this parameter existed, and the returned "people found" count is 0
+        (there was nothing to look for).
         """
         if max_cost < 0:
             print(f"max_cost must be non-negative, not {max_cost}")
-            return [], 0.0, 0.0
+            return [], 0.0, 0.0, 0
 
         if not (0 <= start_row < self.grid.rows and 0 <= start_col < self.grid.cols):
             print(f"start_row/start_col ({start_row}, {start_col}) is outside the grid ({self.grid.rows}x{self.grid.cols})")
-            return [], 0.0, 0.0
+            return [], 0.0, 0.0, 0
 
         # The drone can't launch from a cell it isn't allowed to enter in
         # the first place.
         if blocked_mask is not None and blocked_mask[start_row, start_col]:
             print(f"start_row/start_col ({start_row}, {start_col}) is blocked")
-            return [], 0.0, 0.0
+            return [], 0.0, 0.0, 0
 
         find_path_from = PATHFINDING_ALGORITHMS.get(algorithm)
         if find_path_from is None:
             print(f"Unknown algorithm '{algorithm}', expected one of {list(PATHFINDING_ALGORITHMS)}")
-            return [], 0.0, 0.0
+            return [], 0.0, 0.0, 0
 
         path, total_value, cost_used = find_path_from(
             self.grid,
@@ -99,7 +101,7 @@ class TrajectoryGenerator():
         )
 
         if not actual_person_locations:
-            return path, total_value, cost_used
+            return path, total_value, cost_used, 0
 
         return _stop_once_everyone_found(
             self.grid, path, total_value, cost_used,
@@ -119,7 +121,7 @@ def _stop_once_everyone_found(
     require_return_to_base: bool,
     blocked_mask: np.ndarray,
     actual_person_locations: list,
-) -> tuple[list[tuple[int, int]], float, float]:
+) -> tuple[list[tuple[int, int]], float, float, int]:
     """
     Adds one additional, algorithm-independent stopping rule on top of
     whichever algorithm TrajectoryGenerator.find_best_path just ran: once
@@ -167,10 +169,14 @@ def _stop_once_everyone_found(
     fact, that the mission stops being flown once it is realistically
     "done" - the same as for every other algorithm.
 
-    Returns (path, total_value, cost_used) - truncated at the first point
-    every real person was reached, plus a fresh walk home appended from
-    there if require_return_to_base - or the original, unmodified inputs
-    if that point never occurs before the path's own natural end.
+    Returns (path, total_value, cost_used, persons_found) - path truncated
+    at the first point every real person was reached, plus a fresh walk
+    home appended from there if require_return_to_base, with persons_found
+    equal to len(actual_person_locations) in that case (everyone was
+    found) - or the original, unmodified path/total_value/cost_used if
+    that point never occurs before the path's own natural end, with
+    persons_found counting however many (possibly not all) of
+    actual_person_locations the path actually reached by then.
     """
     still_missing = set(actual_person_locations)
 
@@ -181,8 +187,10 @@ def _stop_once_everyone_found(
             found_at_index = index
             break
 
+    persons_found = len(actual_person_locations) - len(still_missing)
+
     if found_at_index is None or found_at_index >= len(path) - 1:
-        return path, total_value, cost_used  # never all found, or only right at the path's own natural end - nothing to trim
+        return path, total_value, cost_used, persons_found  # never all found, or only right at the path's own natural end - nothing to trim
 
     truncated_path = path[:found_at_index + 1]
     truncated_cost = _replay_path_cost(grid, truncated_path)
@@ -195,7 +203,7 @@ def _stop_once_everyone_found(
             truncated_value += float(grid.coordinates_values[cell])
 
     if not require_return_to_base:
-        return truncated_path, truncated_value, truncated_cost
+        return truncated_path, truncated_value, truncated_cost, persons_found
 
     row, col = truncated_path[-1]
     rows, cols = grid.rows, grid.cols
@@ -213,9 +221,9 @@ def _stop_once_everyone_found(
         grid, row, col, start_row, start_col, max_cost - truncated_cost, None, blocked_mask, visited_mask, max_steps,
     )
     if not reached:
-        return truncated_path, truncated_value, truncated_cost
+        return truncated_path, truncated_value, truncated_cost, persons_found
 
-    return truncated_path + return_path_cells, truncated_value + return_value_gained, truncated_cost + return_cost
+    return truncated_path + return_path_cells, truncated_value + return_value_gained, truncated_cost + return_cost, persons_found
 
 
 def _replay_path_cost(grid: CoordinatesGrid, path: list) -> float:

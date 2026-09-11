@@ -61,7 +61,7 @@ def main():
     #     "value_cost_ratio": greedy_pathfinding.find_path_by_value_cost_ratio,
     #     "lowest_cost": greedy_pathfinding.find_path_by_lowest_cost
     # }
-    path, total_value, cost_used = trajectory_generator.find_best_path(
+    path, total_value, cost_used, persons_found = trajectory_generator.find_best_path(
         start_row=mission_data["start_row"],
         start_col=mission_data["start_col"],
         max_cost=drone_params["max_cost"],
@@ -72,6 +72,10 @@ def main():
     )
 
     print(f"Best path found: {len(path)} steps, total value {total_value:.2f}, cost used {cost_used:.2f}")
+
+    persons_total = len(mission_data["actual_person_locations"])
+    if persons_total > 0:
+        print(f"Searched people found: {persons_found}/{persons_total}")
 
     launch_gui(
         coordinates_grid,
