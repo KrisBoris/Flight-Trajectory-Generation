@@ -28,12 +28,33 @@ def load_mission_data(file_path) -> dict:
         "blocked_cells": [                        (optional, default [])
           {"row": int, "col": int},
           ...
+        ],
+        "actual_person_locations": [               (optional, default [])
+          {"row": int, "col": int},
+          ...
         ]
       }
 
     start_location is where the drone launches from and returns to (e.g. the
     rescue team's base) - a fixed point dictated by the real scenario, not
     something TrajectoryGenerator gets to choose.
+
+    actual_person_locations is different from searched_person_locations: it
+    is the mission's ground truth - where the searched person(s) actually
+    are - rather than a prior belief about where they might be. It plays no
+    part in grid.coordinates_values or in any algorithm's own target-
+    seeking logic; it exists purely so TrajectoryGenerator.find_best_path
+    can add one extra, algorithm-independent stopping rule on top of
+    whichever algorithm was run - see pathfinding_algorithms.trajectory_
+    generator._stop_once_everyone_found - stop once the drone's path has
+    actually passed through every one of these cells, since a real mission
+    would not keep flying once everyone has genuinely been found. Left
+    empty (the default), every algorithm behaves exactly as it did before
+    this field existed. A location here that coincides with a blocked cell
+    can never actually be reached, so it can never be "found" either - this
+    only prints a warning rather than raising, since (unlike a blocked
+    start_location) it does not make the rest of the scenario unrunnable,
+    it just means this specific early-stop rule can never trigger.
 
     blocked_cells lists individual no-fly cells (storm cells, restricted
     airspace, terrain the drone can't overfly) as part of the scenario
@@ -72,6 +93,10 @@ def load_mission_data(file_path) -> dict:
           the same layout CoordinatesGrid.set_searched_area_values expects.
         "blocked_cells": list of (row, col) int tuples - the same layout
           coordinates_grid.test_data_generator.build_blocked_mask expects.
+        "actual_person_locations": list of (row, col) int tuples - the same
+          layout pathfinding_algorithms.trajectory_generator.
+          TrajectoryGenerator.find_best_path's actual_person_locations
+          parameter expects.
       }
     """
     with open(file_path, "r") as data_file:
@@ -82,12 +107,20 @@ def load_mission_data(file_path) -> dict:
     locations = raw_data.get("searched_person_locations", [])
     start_row, start_col = start_location["row"], start_location["col"]
     blocked_cells = [(cell["row"], cell["col"]) for cell in raw_data.get("blocked_cells", [])]
+    actual_person_locations = [(cell["row"], cell["col"]) for cell in raw_data.get("actual_person_locations", [])]
 
     if (start_row, start_col) in blocked_cells:
         raise ValueError(
             f"{file_path}: start_location ({start_row}, {start_col}) is also listed in blocked_cells - "
             "the drone can't launch from a cell it isn't allowed to enter."
         )
+
+    for person_row, person_col in actual_person_locations:
+        if (person_row, person_col) in blocked_cells:
+            print(
+                f"{file_path}: actual_person_locations ({person_row}, {person_col}) is also listed in "
+                "blocked_cells - the drone can never enter it, so this person can never actually be found."
+            )
 
     search_areas = [
         np.array([location["row"], location["col"], location["probability"]], dtype=np.float64)
@@ -105,6 +138,7 @@ def load_mission_data(file_path) -> dict:
         "start_col": start_col,
         "search_areas": search_areas,
         "blocked_cells": blocked_cells,
+        "actual_person_locations": actual_person_locations,
     }
 
 

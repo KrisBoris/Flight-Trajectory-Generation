@@ -21,6 +21,7 @@ Zrozumienie kilku wspólnych elementów znacznie ułatwia lekturę opisów algor
 - **Budżet (`max_cost`) i `require_return_to_base`.** Górny limit łącznego kosztu całej misji. Gdy powrót jest wymagany, każdy algorytm przed każdym kolejnym ruchem rezerwuje wystarczającą ilość pozostałego budżetu na najtańszą możliwą trasę powrotną — dzięki temu dron nigdy nie może utknąć poza punktem, z którego nie da się już wrócić.
 - **Komórka startowa.** Ustalona przez misję (np. baza zespołu ratowniczego). Każdy algorytm zaczyna właśnie tutaj; projekt sprawdza też przy wczytywaniu scenariusza, czy komórka startowa nie znajduje się przypadkiem na liście zablokowanych.
 - **Cele / pula kandydatów.** Komórki, których wartość przekracza `Constants.DEFAULT_PROBABILITY`. Większość algorytmów w projekcie (wszystkie poza najprostszym, zachłannym „spacerowiczem”) ogranicza wybór celów właśnie do tej puli, zamiast rozważać dosłownie każdą komórkę siatki — to właśnie dzięki temu nie marnują wysiłku na porównywanie ze sobą bezwartościowych, pozbawionych informacji komórek tła.
+- **Stan faktyczny a wcześniejsze przekonanie.** `searched_person_locations` (wraz z `probability`) to zawsze tylko *przekonanie* o tym, gdzie osoba może się znajdować — to właśnie to widzi i przeszukuje logika wyboru celów każdego algorytmu. `actual_person_locations` to osobna, opcjonalna lista miejsc, w których osoba (lub osoby) *naprawdę* się znajdują. Nie odgrywa żadnej roli w decyzjach żadnego algorytmu — dodaje jedynie jedną dodatkową, niezależną od algorytmu regułę zakończenia na wierzchu tego, co dany algorytm i tak by zrobił — patrz **Zakończenie po odnalezieniu wszystkich**, tuż przed sekcją 4.1.
 
 ## 3. Jak korzystać z projektu
 
@@ -46,7 +47,8 @@ requirements.txt           numpy, ortools, matplotlib, PyQt5
     "rows": 100, "cols": 100,
     "altitude_range": [0.0, 20.0],
     "cell_size_meters": 5.0,
-    "max_gradient": 0.001
+    "max_gradient": 0.001,
+    "seed": 1
   },
   "start_location": {"row": 0, "col": 0},
   "searched_person_locations": [
@@ -54,11 +56,14 @@ requirements.txt           numpy, ortools, matplotlib, PyQt5
   ],
   "blocked_cells": [
     {"row": 10, "col": 10}
+  ],
+  "actual_person_locations": [
+    {"row": 3, "col": 5}
   ]
 }
 ```
 
-`terrain` opisuje rozmiar siatki oraz sposób generowania jej losowej rzeźby terenu (`max_gradient` ogranicza maksymalne nachylenie między dwiema sąsiednimi komórkami — jest to współczynnik nachylenia, nie procent). `start_location` to stały punkt startu/powrotu. `searched_person_locations` to rzeczywiste cele. `blocked_cells` jest opcjonalne i wylicza stałe komórki zamknięte dla lotów — **komórka startowa nigdy nie może się na tej liście znaleźć**; loader natychmiast zgłasza błąd, jeśli tak się stanie.
+`terrain` opisuje rozmiar siatki oraz sposób generowania jej losowej rzeźby terenu (`max_gradient` ogranicza maksymalne nachylenie między dwiema sąsiednimi komórkami — jest to współczynnik nachylenia, nie procent; `seed` sprawia, że ta losowa rzeźba jest powtarzalna — ten sam plik scenariusza zawsze odtwarza dokładnie tę samą mapę). `start_location` to stały punkt startu/powrotu. `searched_person_locations` to rzeczywiste cele (wcześniejsze przekonanie, wraz z prawdopodobieństwami). `blocked_cells` jest opcjonalne i wylicza stałe komórki zamknięte dla lotów — **komórka startowa nigdy nie może się na tej liście znaleźć**; loader natychmiast zgłasza błąd, jeśli tak się stanie. `actual_person_locations` jest opcjonalne i wylicza, gdzie osoba (lub osoby) faktycznie się znajdują (stan faktyczny, bez prawdopodobieństwa, zero lub więcej wpisów) — patrz **Zakończenie po odnalezieniu wszystkich** przed sekcją 4.1.
 
 ### 3.3 Opis drona (`drone_data/*.json`)
 
@@ -99,6 +104,10 @@ run_benchmark(algorithms=["grasp", "tabu_search", "exact_solver"], scenario_file
 Wszystkie 16 algorytmów ma dokładnie taki sam sygnaturę wywołania i kształt wyniku — `(grid, start_row, start_col, max_cost, require_return_to_base=True, blocked_mask=None, ...) → (path, total_value, cost_used)` — dzięki czemu każdy z nich można wymiennie podstawić do `TrajectoryGenerator` lub `run_benchmark`. To, co je różni, to wyłącznie *sposób*, w jaki każdy z nich decyduje, dokąd polecieć dalej.
 
 Dzielą się na cztery rodziny: proste **heurystyki zachłanne**, warianty **przeszukiwania A\***, które optymalnie prowadzą trasę między wybranymi celami, **metaheurystyki**, które iteracyjnie poprawiają całą trasę, oraz jeden **solver dokładny**, który wprost dowodzi optymalności.
+
+**Zakończenie po odnalezieniu wszystkich.** `TrajectoryGenerator.find_best_path` przyjmuje opcjonalny argument `actual_person_locations` — stan faktyczny misji (patrz **Stan faktyczny a wcześniejsze przekonanie** w sekcji 2) — i dokłada dokładnie jedną dodatkową regułę na wierzchu tego, co właśnie zrobił wybrany algorytm, jednolicie, bez modyfikowania logiki żadnego z nich: gdy zwrócona trasa faktycznie przejdzie przez każdą z tych komórek, wszystko po tym punkcie jest odcinane i zastępowane świeżym, krótkim lotem prosto do bazy (jeśli `require_return_to_base`). Działa to dla wszystkich 16 algorytmów bez zmian, ponieważ każdy z nich już teraz zwraca *pełną*, złożoną z pojedynczych komórek trasę, którą dron faktycznie przelatuje, a nie tylko listę punktów pośrednich — więc sprawdzenie to jedynie przeszukanie już obliczonej trasy. Oznacza to też, że osoba jest rozpoznana jako odnaleziona w momencie wejścia na jej komórkę, nawet w połowie lotu w stronę zupełnie innego celu, a nie dopiero gdy algorytm skończy odcinek, na którym akurat się znajdował. Jeśli `actual_person_locations` jest puste lub pominięte, nic się tu nie zmienia — każdy algorytm zachowuje się dokładnie tak, jak opisano poniżej. Lokalizacje nieodnalezione do końca trasy (w tym te pokrywające się z zablokowaną komórką, do której dron nigdy nie może wejść) po prostu oznaczają, że ta reguła nigdy się nie uruchamia, a oryginalny wynik danego algorytmu jest zwracany bez zmian.
+
+Jedna rzecz warta precyzyjnego podkreślenia: dla `exact_solver` nie zmienia to tego, co zostało dowiedzione jako optymalne. Jego optymalizacja w ogóle nie zna pojęcia `actual_person_locations` — wciąż maksymalizuje zebraną wartość ważoną prawdopodobieństwem w ramach budżetu, i ten dowód pozostaje w mocy. Przycięcie zwróconej przez niego trasy, gdy akurat przejdzie ona przez wszystkie prawdziwe osoby, to dokładnie ten sam, kosmetyczny krok wykonywany już po fakcie, zastosowany do wyniku każdego innego algorytmu — nie jest to zmiana samego przeszukiwania ani jego gwarancji.
 
 ---
 

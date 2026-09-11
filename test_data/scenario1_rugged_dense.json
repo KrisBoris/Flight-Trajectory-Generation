@@ -100,5 +100,9 @@
         {"row": 75, "col": 76},
         {"row": 76, "col": 76},
         {"row": 76, "col": 77}
+    ],
+    "actual_person_locations": [
+        {"row": 3, "col": 5},
+        {"row": 42, "col": 92}
     ]
 }
