@@ -1,3 +1,7 @@
 benchmark/
 __pycache__/
 .claude
+src/pathfinding_algorithms/__pycache__/trajectory_generator.cpython-312.pyc
+src/pathfinding_algorithms/__pycache__/greedy_pathfinding.cpython-312.pyc
+src/coordinates_grid/__pycache__/weights_grid.cpython-312.pyc
+src/coordinates_grid/__pycache__/coordinates_grid.cpython-312.pyc
