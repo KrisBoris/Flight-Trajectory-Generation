@@ -67,7 +67,8 @@ def main():
         max_cost=drone_params["max_cost"],
         require_return_to_base=drone_params["require_return_to_base"],
         blocked_mask=blocked_mask,
-        algorithm="grasp"
+        algorithm="lowest_cost",
+        actual_person_locations=mission_data["actual_person_locations"],
     )
 
     print(f"Best path found: {len(path)} steps, total value {total_value:.2f}, cost used {cost_used:.2f}")
@@ -77,6 +78,7 @@ def main():
         path=path,
         terrain_coordinates=terrain_coordinates,
         blocked_mask=blocked_mask,
+        actual_person_locations=mission_data["actual_person_locations"],
     )
 
 

@@ -536,5 +536,9 @@
         {"row": 45, "col": 16},
         {"row": 46, "col": 15},
         {"row": 46, "col": 16}
+    ],
+    "actual_person_locations": [
+        {"row": 10, "col": 40},
+        {"row": 48, "col": 40}
     ]
 }
