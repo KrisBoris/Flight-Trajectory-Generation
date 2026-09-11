@@ -123,6 +123,7 @@ def run_benchmark(
         mission_data = load_mission_data(scenario_file)
         grid, blocked_mask, terrain_coordinates = _build_grid(mission_data, drone_params, terrain_seed)
         targets = [(int(area[0]), int(area[1])) for area in mission_data["search_areas"]]
+        actual_person_locations = mission_data["actual_person_locations"]
         trajectory_generator = TrajectoryGenerator(grid=grid)
 
         for algorithm in algorithms:
@@ -133,13 +134,14 @@ def run_benchmark(
                 start_time = time.time()
 
                 try:
-                    path, total_value, cost_used = trajectory_generator.find_best_path(
+                    path, total_value, cost_used, persons_found = trajectory_generator.find_best_path(
                         start_row=mission_data["start_row"],
                         start_col=mission_data["start_col"],
                         max_cost=drone_params["max_cost"],
                         require_return_to_base=drone_params["require_return_to_base"],
                         blocked_mask=blocked_mask,
                         algorithm=algorithm,
+                        actual_person_locations=actual_person_locations,
                     )
                     elapsed_seconds = time.time() - start_time
                     path_cells = set(path)
@@ -151,6 +153,7 @@ def run_benchmark(
                         save_trajectory_image(
                             grid, image_path, path=path,
                             terrain_coordinates=terrain_coordinates, blocked_mask=blocked_mask,
+                            actual_person_locations=actual_person_locations,
                         )
 
                     results.append({
@@ -163,6 +166,8 @@ def run_benchmark(
                         "total_value": round(total_value, 2),
                         "targets_hit": targets_hit,
                         "targets_total": len(targets),
+                        "persons_found": persons_found,
+                        "persons_total": len(actual_person_locations),
                         "runtime_seconds": round(elapsed_seconds, 2),
                         "error": "",
                     })
@@ -178,6 +183,8 @@ def run_benchmark(
                         "total_value": None,
                         "targets_hit": None,
                         "targets_total": len(targets),
+                        "persons_found": None,
+                        "persons_total": len(actual_person_locations),
                         "runtime_seconds": round(elapsed_seconds, 2),
                         "error": str(error),
                     })
@@ -240,15 +247,21 @@ def _print_results_table(results: list) -> None:
     with a blank line separating each scenario's block of algorithm rows.
     The "rep" column only appears when results actually contain more than
     one repetition, keeping a single-repetition run's output identical to
-    before repetitions existed.
+    before repetitions existed. Likewise, the "persons" column (how many of
+    a scenario's actual_person_locations the path actually reached) only
+    appears when at least one row has a nonzero persons_total, so a
+    scenario/run that never uses this field prints exactly as it always
+    has.
     """
     if not results:
         print("No results to display.")
         return
 
     show_repetition = max(row["repetition"] for row in results) > 1
+    show_persons = any((row["persons_total"] or 0) > 0 for row in results)
     repetition_header = f"{'rep':>5}" if show_repetition else ""
-    header = f"{'scenario':<28}{'algorithm':<30}{repetition_header}{'steps':>7}{'cost':>11}{'budget%':>9}{'value':>11}{'targets':>10}{'time(s)':>9}"
+    persons_header = f"{'persons':>10}" if show_persons else ""
+    header = f"{'scenario':<28}{'algorithm':<30}{repetition_header}{'steps':>7}{'cost':>11}{'budget%':>9}{'value':>11}{'targets':>10}{persons_header}{'time(s)':>9}"
     print()
     print(header)
     print("-" * len(header))
@@ -267,9 +280,10 @@ def _print_results_table(results: list) -> None:
             continue
 
         targets_str = f"{row['targets_hit']}/{row['targets_total']}"
+        persons_cell = f"{row['persons_found']}/{row['persons_total']}".rjust(10) if show_persons else ""
         print(
             f"{row['scenario']:<28}{row['algorithm']:<30}{repetition_cell}{row['steps']:>7}{row['cost_used']:>11.1f}"
-            f"{row['budget_used_pct']:>8.1f}%{row['total_value']:>11.2f}{targets_str:>10}{row['runtime_seconds']:>9.2f}"
+            f"{row['budget_used_pct']:>8.1f}%{row['total_value']:>11.2f}{targets_str:>10}{persons_cell}{row['runtime_seconds']:>9.2f}"
         )
 
 

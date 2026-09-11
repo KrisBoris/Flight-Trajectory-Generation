@@ -19,6 +19,13 @@ PROBABILITY_COLORMAP = "RdYlGn_r"
 
 BLOCKED_LABEL = "blocked (no-fly)"
 
+ACTUAL_PERSON_LABEL = "actual person location"
+# Cyan, like the 3D start/end markers' magenta/red, is deliberately outside
+# PROBABILITY_COLORMAP's red -> yellow -> green range entirely, so this
+# marker stays visually distinct regardless of what probability color (or
+# terrain shade) happens to sit underneath it.
+ACTUAL_PERSON_COLOR = "cyan"
+
 # Target cells-across for the 3D surface mesh - see _populate_3d_axes.
 SURFACE_MESH_TARGET = 50
 
@@ -67,22 +74,43 @@ def _path_end_index(path: list) -> int:
     """
     Index of the point actually worth marking as "the end" of the path - not
     necessarily path[-1]: every pathfinding algorithm appends a return leg
-    (path + path[-2::-1]) when require_return_to_base is set, which makes
-    path[-1] just the start cell again. Marking that would sit exactly on
-    top of the start marker and show nothing new, so what's actually useful
-    is the turnaround point - the farthest cell the drone reached before
-    heading back.
+    when require_return_to_base is set, which makes path[-1] just the start
+    cell again. Marking that would sit exactly on top of the start marker
+    and show nothing new, so what's actually useful is the turnaround
+    point - the cell farthest (by Chebyshev distance) from the start that
+    the drone reached before heading back; among ties, the latest one in
+    visiting order, since an earlier visit to that same distance wasn't yet
+    the final turnaround.
 
-    A return-trip path is always a palindrome (the outbound cells, then the
-    same cells reversed), so its center index is that turnaround point.
+    This is NOT the path's midpoint: the return leg is a fresh, direct walk
+    home from wherever the drone happened to end up (see
+    greedy_pathfinding._walk_toward_target and pathfinding_algorithms.
+    trajectory_generator._stop_once_everyone_found), not a mirror of
+    however long or wandering the outbound portion was - a tour that visits
+    many targets before a short direct trip home (exactly what happens once
+    actual_person_locations lets a run stop early - see TrajectoryGenerator.
+    find_best_path) can have an outbound leg many times longer than its
+    return leg, so len(path) // 2 lands well short of the genuine
+    turnaround, on some arbitrary mid-tour cell instead.
+
     Detected here via path[0] == path[-1] (with no return leg, the path
-    isn't generally a palindrome, so path[-1] is already the genuine
+    isn't generally back at the start, so path[-1] is already the genuine
     endpoint) rather than threading a require_return_to_base flag through
     the whole call chain just for this.
     """
-    if len(path) > 1 and path[0] == path[-1]:
-        return len(path) // 2
-    return len(path) - 1
+    if len(path) <= 1 or path[0] != path[-1]:
+        return len(path) - 1
+
+    start_row, start_col = path[0]
+    farthest_index = 0
+    farthest_distance = -1
+    for index, (row, col) in enumerate(path):
+        distance = max(abs(row - start_row), abs(col - start_col))
+        if distance >= farthest_distance:
+            farthest_distance = distance
+            farthest_index = index
+
+    return farthest_index
 
 
 def _path_arrow_indices(path_length: int) -> np.ndarray:
@@ -241,6 +269,25 @@ def _draw_2d_path(axes, path: list) -> list:
     return handles
 
 
+def _draw_2d_actual_persons(axes, actual_person_locations: list):
+    """
+    Marks every ground-truth actual_person_locations cell (see
+    TrajectoryGenerator.find_best_path's actual_person_locations parameter
+    - as opposed to the probability-based coordinates_values, this is where
+    the person(s) genuinely are) on the 2D grid axes, regardless of whether
+    the drawn path actually reaches any of them - so it's possible to see
+    at a glance whether the mission found everyone. Returns the legend
+    entry for it.
+    """
+    person_rows = [cell[0] for cell in actual_person_locations]
+    person_cols = [cell[1] for cell in actual_person_locations]
+
+    return axes.scatter(
+        person_cols, person_rows, marker="P", s=220, color=ACTUAL_PERSON_COLOR,
+        edgecolors="black", linewidths=1.3, zorder=7, label=ACTUAL_PERSON_LABEL,
+    )
+
+
 def _draw_3d_blocked_mask(axes, blocked_mask: np.ndarray, terrain_coordinates: np.ndarray, hover_height: float):
     """
     Marks every blocked_mask cell with a black X, hovering hover_height
@@ -345,13 +392,42 @@ def _draw_3d_path(axes, path: list, terrain_coordinates: np.ndarray, hover_heigh
     return handles
 
 
-def _populate_2d_axes(figure: Figure, axes, values: np.ndarray, norm: mcolors.Normalize, path: list, blocked_mask: np.ndarray) -> None:
+def _draw_3d_actual_persons(axes, actual_person_locations: list, terrain_coordinates: np.ndarray, hover_height: float):
+    """
+    The 3D counterpart of _draw_2d_actual_persons: marks every ground-truth
+    actual_person_locations cell, hovering hover_height above the terrain
+    surface (see _populate_3d_axes for why a height offset is needed at
+    all) so it stays visible instead of being drawn on/under the surface
+    mesh, and above the path/start/end markers (see their own zorder)
+    should a real person happen to coincide with one of those. Returns the
+    legend entry for it.
+    """
+    person_x = [terrain_coordinates[row, col, 0] for row, col in actual_person_locations]
+    person_y = [terrain_coordinates[row, col, 1] for row, col in actual_person_locations]
+    person_z = [terrain_coordinates[row, col, 2] + hover_height for row, col in actual_person_locations]
+
+    return axes.scatter(
+        person_x, person_y, person_z, marker="P", s=280, color=ACTUAL_PERSON_COLOR,
+        edgecolors="black", linewidths=1.3, depthshade=False, label=ACTUAL_PERSON_LABEL, zorder=21,
+    )
+
+
+def _populate_2d_axes(
+    figure: Figure,
+    axes,
+    values: np.ndarray,
+    norm: mcolors.Normalize,
+    path: list,
+    blocked_mask: np.ndarray,
+    actual_person_locations: list = None,
+) -> None:
     """
     Draws the full flat "2D grid" view - values rendered as a color-coded
-    image (see PROBABILITY_COLORMAP), with blocked_mask (if given) and path
-    (if given) drawn on top via _draw_2d_blocked_mask/_draw_2d_path -
-    directly onto an already-created `axes` (and its parent `figure`, for
-    the colorbar). Shared by TrajectoryVisualizerWindow's interactive "2D
+    image (see PROBABILITY_COLORMAP), with blocked_mask (if given), path
+    (if given) and actual_person_locations (if given) drawn on top via
+    _draw_2d_blocked_mask/_draw_2d_path/_draw_2d_actual_persons - directly
+    onto an already-created `axes` (and its parent `figure`, for the
+    colorbar). Shared by TrajectoryVisualizerWindow's interactive "2D
     grid" tab and save_trajectory_image's static composite image, so both
     render identically.
     """
@@ -369,6 +445,9 @@ def _populate_2d_axes(figure: Figure, axes, values: np.ndarray, norm: mcolors.No
     if path:
         legend_handles.extend(_draw_2d_path(axes, path))
 
+    if actual_person_locations:
+        legend_handles.append(_draw_2d_actual_persons(axes, actual_person_locations))
+
     if legend_handles:
         axes.legend(handles=legend_handles, loc="upper right")
 
@@ -381,14 +460,16 @@ def _populate_3d_axes(
     path: list,
     terrain_coordinates: np.ndarray,
     blocked_mask: np.ndarray,
+    actual_person_locations: list = None,
 ) -> None:
     """
     Draws the full "3D terrain" view - a colored surface mesh over
     terrain_coordinates (subsampled - see SURFACE_MESH_TARGET - and colored
     via a max-pooled, per-face version of values), with blocked_mask (if
-    given) and path (if given) drawn hovering just above it via
-    _draw_3d_blocked_mask/_draw_3d_path - directly onto an already-created
-    3D `axes` (and its parent `figure`, for the colorbar). Shared by
+    given), path (if given) and actual_person_locations (if given) drawn
+    hovering just above it via _draw_3d_blocked_mask/_draw_3d_path/
+    _draw_3d_actual_persons - directly onto an already-created 3D `axes`
+    (and its parent `figure`, for the colorbar). Shared by
     TrajectoryVisualizerWindow's interactive "3D terrain" tab and
     save_trajectory_image's static composite image, so both render
     identically.
@@ -460,6 +541,9 @@ def _populate_3d_axes(
     if path:
         legend_handles.extend(_draw_3d_path(axes, path, terrain_coordinates, hover_height))
 
+    if actual_person_locations:
+        legend_handles.append(_draw_3d_actual_persons(axes, actual_person_locations, terrain_coordinates, hover_height))
+
     if legend_handles:
         axes.legend(handles=legend_handles, loc="upper right")
 
@@ -469,9 +553,10 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
     Displays a CoordinatesGrid's probability values as a color-coded matrix -
     green for low, yellow for medium, red for high probability of finding the
     searched person, scaled between the grid's own min and max - with the
-    path found by TrajectoryGenerator and any blocked_mask no-fly cells drawn
-    on top. When terrain_coordinates (real-world x, y, z per cell, in meters)
-    is supplied, a second tab plots the same colors, path and blocked cells
+    path found by TrajectoryGenerator, any blocked_mask no-fly cells, and any
+    actual_person_locations ground truth drawn on top. When
+    terrain_coordinates (real-world x, y, z per cell, in meters) is supplied,
+    a second tab plots the same colors, path, blocked cells and ground truth
     over the actual terrain shape instead of a flat grid.
     """
 
@@ -481,6 +566,7 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         path: list = None,
         terrain_coordinates: np.ndarray = None,
         blocked_mask: np.ndarray = None,
+        actual_person_locations: list = None,
     ):
         """
         Builds the window's tabs: a flat "2D grid" view always, plus a
@@ -497,7 +583,7 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         norm = mcolors.Normalize(vmin=float(values.min()), vmax=float(values.max()))
 
         tabs = QtWidgets.QTabWidget()
-        tabs.addTab(self._build_2d_view(values, norm, path, blocked_mask), "2D grid")
+        tabs.addTab(self._build_2d_view(values, norm, path, blocked_mask, actual_person_locations), "2D grid")
 
         if terrain_coordinates is not None:
             # terrain_coordinates is rendered as-is - it's already the exact
@@ -505,13 +591,23 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
             # coordinates_grid.test_data_generator.generate_random_terrain_coordinates
             # and its max_gradient parameter), so what's displayed always
             # matches what the drone's cost was computed against.
-            tabs.addTab(self._build_3d_view(values, norm, path, terrain_coordinates, blocked_mask), "3D terrain")
+            tabs.addTab(
+                self._build_3d_view(values, norm, path, terrain_coordinates, blocked_mask, actual_person_locations),
+                "3D terrain",
+            )
 
         self.setCentralWidget(tabs)
         self.resize(1400, 1000)
 
 
-    def _build_2d_view(self, values: np.ndarray, norm: mcolors.Normalize, path: list, blocked_mask: np.ndarray) -> FigureCanvasQTAgg:
+    def _build_2d_view(
+        self,
+        values: np.ndarray,
+        norm: mcolors.Normalize,
+        path: list,
+        blocked_mask: np.ndarray,
+        actual_person_locations: list = None,
+    ) -> FigureCanvasQTAgg:
         """
         Builds the flat "2D grid" tab: a Qt-backed canvas whose axes are
         populated by _populate_2d_axes. Returns the finished canvas ready
@@ -522,7 +618,7 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         axes = figure.add_subplot(111)
 
-        _populate_2d_axes(figure, axes, values, norm, path, blocked_mask)
+        _populate_2d_axes(figure, axes, values, norm, path, blocked_mask, actual_person_locations)
 
         canvas.draw()
         return canvas
@@ -535,6 +631,7 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         path: list,
         terrain_coordinates: np.ndarray,
         blocked_mask: np.ndarray,
+        actual_person_locations: list = None,
     ) -> FigureCanvasQTAgg:
         """
         Builds the "3D terrain" tab: a Qt-backed canvas whose 3D axes are
@@ -546,7 +643,7 @@ class TrajectoryVisualizerWindow(QtWidgets.QMainWindow):
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         axes = figure.add_subplot(111, projection="3d")
 
-        _populate_3d_axes(figure, axes, values, norm, path, terrain_coordinates, blocked_mask)
+        _populate_3d_axes(figure, axes, values, norm, path, terrain_coordinates, blocked_mask, actual_person_locations)
 
         canvas.draw()
         return canvas
@@ -557,6 +654,7 @@ def launch_gui(
     path: list = None,
     terrain_coordinates: np.ndarray = None,
     blocked_mask: np.ndarray = None,
+    actual_person_locations: list = None,
 ) -> None:
     """
     Opens the trajectory visualizer window and blocks until it's closed.
@@ -567,6 +665,7 @@ def launch_gui(
         path=path,
         terrain_coordinates=terrain_coordinates,
         blocked_mask=blocked_mask,
+        actual_person_locations=actual_person_locations,
     )
     window.showMaximized()
     app.exec_()
@@ -578,6 +677,7 @@ def save_trajectory_image(
     path: list = None,
     terrain_coordinates: np.ndarray = None,
     blocked_mask: np.ndarray = None,
+    actual_person_locations: list = None,
 ) -> None:
     """
     Renders the same "2D grid" view TrajectoryVisualizerWindow shows
@@ -602,12 +702,12 @@ def save_trajectory_image(
         figure = Figure(figsize=(20, 9))
         axes_2d = figure.add_subplot(1, 2, 1)
         axes_3d = figure.add_subplot(1, 2, 2, projection="3d")
-        _populate_3d_axes(figure, axes_3d, values, norm, path, terrain_coordinates, blocked_mask)
+        _populate_3d_axes(figure, axes_3d, values, norm, path, terrain_coordinates, blocked_mask, actual_person_locations)
     else:
         figure = Figure(figsize=(10, 9))
         axes_2d = figure.add_subplot(1, 1, 1)
 
-    _populate_2d_axes(figure, axes_2d, values, norm, path, blocked_mask)
+    _populate_2d_axes(figure, axes_2d, values, norm, path, blocked_mask, actual_person_locations)
 
     canvas = FigureCanvasAgg(figure)
     canvas.print_figure(output_path)

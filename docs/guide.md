@@ -21,6 +21,7 @@ Understanding a few shared building blocks makes every algorithm description bel
 - **Budget (`max_cost`) and `require_return_to_base`.** The total cost ceiling for the whole mission. When return is required, every algorithm reserves enough remaining budget for the cheapest possible route home before committing to any further move — so the drone can never strand itself past the point of no return.
 - **The start cell.** Fixed by the mission (e.g. the rescue team's base). Every algorithm begins here; the project also validates at scenario-load time that the start cell isn't itself listed as blocked.
 - **Targets / candidate pool.** Cells whose value is above `Constants.DEFAULT_PROBABILITY`. Most algorithms in this project (everything except the simplest greedy walker) restrict their target-picking specifically to this pool, rather than considering literally every grid cell — this is what keeps them from wasting search effort comparing meaningless, information-free background cells against one another.
+- **Ground truth vs. prior belief.** `searched_person_locations` (with their `probability`) is only ever a *belief* about where the person might be — it is what every algorithm's target-seeking logic actually sees and searches over. `actual_person_locations` is a separate, optional list of where the person(s) *really* are. It plays no part in any algorithm's own decisions; it only adds one extra, algorithm-independent stopping rule on top of whatever algorithm ran — see **Stopping once everyone is found**, right before section 4.1.
 
 ## 3. How to use the project
 
@@ -46,7 +47,8 @@ requirements.txt           numpy, ortools, matplotlib, PyQt5
     "rows": 100, "cols": 100,
     "altitude_range": [0.0, 20.0],
     "cell_size_meters": 5.0,
-    "max_gradient": 0.001
+    "max_gradient": 0.001,
+    "seed": 1
   },
   "start_location": {"row": 0, "col": 0},
   "searched_person_locations": [
@@ -54,11 +56,14 @@ requirements.txt           numpy, ortools, matplotlib, PyQt5
   ],
   "blocked_cells": [
     {"row": 10, "col": 10}
+  ],
+  "actual_person_locations": [
+    {"row": 3, "col": 5}
   ]
 }
 ```
 
-`terrain` describes the grid size and how its random elevation is generated (`max_gradient` caps how steep two neighboring cells can be — a slope ratio, not a percentage). `start_location` is the fixed launch/return point. `searched_person_locations` are the real targets. `blocked_cells` is optional and lists permanent no-fly cells — **the start cell may never be one of them**; the loader raises an error immediately if it is.
+`terrain` describes the grid size and how its random elevation is generated (`max_gradient` caps how steep two neighboring cells can be — a slope ratio, not a percentage; `seed` makes that random elevation reproducible — the same scenario file always regenerates the exact same map). `start_location` is the fixed launch/return point. `searched_person_locations` are the real targets (a prior belief, with probabilities). `blocked_cells` is optional and lists permanent no-fly cells — **the start cell may never be one of them**; the loader raises an error immediately if it is. `actual_person_locations` is optional and lists where the person(s) actually are (ground truth, no probability needed, zero or more entries) — see **Stopping once everyone is found** before section 4.1.
 
 ### 3.3 Describing a drone (`drone_data/*.json`)
 
@@ -99,6 +104,10 @@ run_benchmark(algorithms=["grasp", "tabu_search", "exact_solver"], scenario_file
 All 16 algorithms share the exact same call signature and return shape — `(grid, start_row, start_col, max_cost, require_return_to_base=True, blocked_mask=None, ...) → (path, total_value, cost_used)` — so any of them can be dropped into `TrajectoryGenerator` or `run_benchmark` interchangeably. What differs is entirely *how* each one decides where to go next.
 
 They fall into four families: simple **greedy heuristics**, **A\* search** variants that route optimally between chosen targets, **metaheuristics** that iteratively improve a whole tour, and one **exact solver** that proves optimality outright.
+
+**Stopping once everyone is found.** `TrajectoryGenerator.find_best_path` accepts an optional `actual_person_locations` argument — the mission's ground truth (see **Ground truth vs. prior belief** in section 2) — and adds exactly one extra rule on top of whichever algorithm just ran, uniformly, without modifying any algorithm's own logic at all: once the returned path has actually passed through every one of those cells, everything after that point is trimmed off and replaced with a fresh, short walk straight home (if `require_return_to_base`). This works for all 16 algorithms unchanged because every one of them already returns the *full*, cell-by-cell route the drone actually flies, not just a list of waypoints — so the check is just a scan over an already-computed path. It also means a person is recognized as found the instant their cell is entered, even mid-flight toward a completely different target, not only when an algorithm finishes whatever leg it happened to be on. If `actual_person_locations` is empty or omitted, nothing here changes anything — every algorithm behaves exactly as documented below. Left unresolved-by-the-time-the-path-ends locations (including ones that coincide with a blocked cell, and so can never actually be entered) simply mean this rule never triggers, and the algorithm's own original result is returned untouched.
+
+One nuance worth being precise about: for `exact_solver`, this does not change what it proved optimal. Its optimization has no notion of `actual_person_locations` at all — it still maximizes probability-weighted value collected under budget, and that proof stands regardless. Trimming its returned path once it happens to pass every real person is exactly the same cosmetic, after-the-fact step applied to every other algorithm's output, not a change to the underlying search or its guarantee.
 
 ---
 

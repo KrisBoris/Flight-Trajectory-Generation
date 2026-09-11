@@ -9,7 +9,7 @@ def find_path_to_highest_value_neighbor(
     start_col: int,
     max_cost: float,
     require_return_to_base: bool = True,
-    blocked_terrain: np.ndarray = None,
+    blocked_mask: np.ndarray = None,
 ) -> tuple[list[tuple[int, int]], float, float]:
     """
     Greedy search (one-step-lookahead greedy heuristic): starting at 
@@ -40,7 +40,7 @@ def find_path_to_highest_value_neighbor(
 
     # return_cost_grid[r, c] is the cost of the shortest route from (r, c) back to base -
     # calculated once for each node
-    return_cost_grid = _build_return_cost_grid(grid, start_row, start_col, blocked_terrain, max_steps) if require_return_to_base else None
+    return_cost_grid = _build_return_cost_grid(grid, start_row, start_col, blocked_mask, max_steps) if require_return_to_base else None
 
     while True:
         best_value = None
@@ -53,7 +53,7 @@ def find_path_to_highest_value_neighbor(
             if next_row < 0 or next_row >= rows or next_col < 0 or next_col >= cols:
                 continue
 
-            if blocked_terrain is not None and blocked_terrain[next_row, next_col]:
+            if blocked_mask is not None and blocked_mask[next_row, next_col]:
                 continue
 
             cost = weights[row, col, direction]
@@ -91,7 +91,7 @@ def find_path_to_highest_value_neighbor(
 
     # Fly the shortest route home
     _, return_path_cells, return_cost, return_value_gained = _walk_toward_target(
-        grid, row, col, start_row, start_col, remaining_budget, None, blocked_terrain, visited, max_steps,
+        grid, row, col, start_row, start_col, remaining_budget, None, blocked_mask, visited, max_steps,
     )
     path_with_return = path + return_path_cells
     total_value += return_value_gained
@@ -106,7 +106,7 @@ def find_path_by_highest_value(
     start_col: int,
     max_cost: float,
     require_return_to_base: bool = True,
-    blocked_terrain: np.ndarray = None,
+    blocked_mask: np.ndarray = None,
 ) -> tuple[list[tuple[int, int]], float, float]:
     """
     1. Find a node with the highest-value, unvisited, unblocked, with 
@@ -132,7 +132,7 @@ def find_path_by_highest_value(
 
     # return_cost_grid[r, c] is the cost of the shortest route from (r, c) back to base -
     # calculated once for each node
-    return_cost_grid = _build_return_cost_grid(grid, start_row, start_col, blocked_terrain, max_steps) if require_return_to_base else None
+    return_cost_grid = _build_return_cost_grid(grid, start_row, start_col, blocked_mask, max_steps) if require_return_to_base else None
 
     while True:
         # 1. Find the highest-value unvisited, unblocked, real cell - see
@@ -141,7 +141,7 @@ def find_path_by_highest_value(
         # np.argmax's tie-break (the first cell in row-major order) among
         # every remaining background cell, all tied at the same value - an
         # arbitrary, cost-blind detour rather than stopping.
-        unavailable = visited if blocked_terrain is None else visited | blocked_terrain
+        unavailable = visited if blocked_mask is None else visited | blocked_mask
         candidate_values = np.where(unavailable | (values <= Constants.DEFAULT_PROBABILITY), -np.inf, values)
         if not np.isfinite(candidate_values).any():
             break
@@ -150,7 +150,7 @@ def find_path_by_highest_value(
 
         # 2-4. Walk toward it; stop entirely if it can't be reached.
         reached, path_cells, cost, value_gained = _walk_toward_target(
-            grid, row, col, target_row, target_col, remaining_budget, return_cost_grid, blocked_terrain, visited, max_steps,
+            grid, row, col, target_row, target_col, remaining_budget, return_cost_grid, blocked_mask, visited, max_steps,
         )
 
         if not reached:
@@ -171,7 +171,7 @@ def find_path_by_highest_value(
     # path - see find_path_for_highest_neighbor_value for why this is
     # guaranteed to fit the remaining budget.
     _, return_path_cells, return_cost, return_value_gained = _walk_toward_target(
-        grid, row, col, start_row, start_col, remaining_budget, None, blocked_terrain, visited, max_steps,
+        grid, row, col, start_row, start_col, remaining_budget, None, blocked_mask, visited, max_steps,
     )
     path_with_return = path + return_path_cells
     total_value += return_value_gained
